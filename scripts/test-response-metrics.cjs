@@ -18,3 +18,6 @@ test('old history and invalid metrics do not invent numbers', () => {
 test('stored metrics round trip without recalculation on restart', () => {
   const m={model:'Lucille',state:'completed',completion_tokens:4,total_ms:700};assert.equal(metrics.text(JSON.parse(JSON.stringify(m))),metrics.text(m));
 });
+test('backend count during cancellation is explicitly partial', () => {
+  assert.match(metrics.text({state:'cancelled',completion_tokens:8,total_ms:1000}),/8 tokens gerados \(parcial informado\)/);
+});
