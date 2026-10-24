@@ -27,6 +27,10 @@ TEST='import unittest\nfrom calc import add\nclass Calc(unittest.TestCase):\n de
 def elevated():
     token=wintypes.HANDLE();value=wintypes.DWORD();size=wintypes.DWORD()
     api=ctypes.WinDLL('advapi32');kernel=ctypes.WinDLL('kernel32')
+    kernel.GetCurrentProcess.restype=wintypes.HANDLE
+    kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+    api.OpenProcessToken.argtypes=[wintypes.HANDLE,wintypes.DWORD,ctypes.POINTER(wintypes.HANDLE)]
+    api.GetTokenInformation.argtypes=[wintypes.HANDLE,ctypes.c_int,ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD)]
     api.OpenProcessToken(kernel.GetCurrentProcess(),8,ctypes.byref(token))
     ok=api.GetTokenInformation(token,20,ctypes.byref(value),4,ctypes.byref(size));kernel.CloseHandle(token)
     return not ok or bool(value.value)
