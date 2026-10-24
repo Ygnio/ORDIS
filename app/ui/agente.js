@@ -180,6 +180,7 @@
           bloco.textos.push(m.texto);
         }
         (m.chamadas || []).forEach((ch) => bloco.append(detalhesFerramenta(ch)));
+        if (m.metricas) window.ordisResponseMetrics.mount(bloco, m.metricas);
       } else if (m.papel === 'tool' && bloco) {
         preencherResultado(bloco, m.id_chamada, m.texto, m.erro, m.imagens || []);
       }
@@ -547,6 +548,11 @@
         segmento.raciocinio.querySelector('.conteudo').textContent += d.texto;
         if (segmento.raciocinio.open) rolar(false);
         break;
+      case 'metricas':
+        if (!segmento) break;
+        if (!segmento.metricas) segmento.metricas = window.ordisResponseMetrics.mount(bloco,d);
+        else window.ordisResponseMetrics.update(segmento.metricas,d);
+        break;
       case 'texto':
         if (!segmento) break;
         if (segmento.raciocinio) {
@@ -579,11 +585,8 @@
   window.addEventListener('painel', ({ detail }) => {
     painel = detail;
     qwen = detail.servicos.find((s) => s.nome === 'inferencia').situacao;
-    const t = detail.tokens;
-    tokensAoVivo =
-      respondendo && segmento && t && typeof t.tokens_per_second === 'number'
-        ? `${t.tokens_per_second.toFixed(1)} tokens/s`
-        : null;
+    // Server-wide counters may include other clients. Per-response metrics come from SSE.
+    tokensAoVivo = null;
     desenharEstado();
     atualizarBackendStatus();
   });

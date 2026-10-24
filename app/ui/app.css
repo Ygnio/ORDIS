@@ -736,4 +736,6 @@ select option { background: var(--solido); color: var(--texto); }
 #mem-list article { padding: 14px; margin: 12px 0; border: 1px solid var(--borda); border-radius: 10px; }
 #mem-list pre, #mem-stats { white-space: pre-wrap; overflow-wrap: anywhere; }
 #mem-list button { margin-right: 8px; }
+.response-metrics { font-size: 11px; line-height: 1.7; color: var(--sutil); margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
+.metrics-hidden .response-metrics { display: none; }
 @media (max-width: 700px) { .policy-list { grid-template-columns: 1fr; } }

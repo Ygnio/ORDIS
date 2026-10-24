@@ -4,6 +4,8 @@
   const { avisar } = window.ordis;
 
   // ---------- Aparência ----------
+  $('mostrar-metricas').checked = window.ordisResponseMetrics.enabled();
+  $('mostrar-metricas').addEventListener('change', e => window.ordisResponseMetrics.setEnabled(e.target.checked));
 
   function marcarTema(tema) {
     for (const b of document.querySelectorAll('#tema-opcoes button')) b.classList.toggle('ativo', b.dataset.valor === tema);

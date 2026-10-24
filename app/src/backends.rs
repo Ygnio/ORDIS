@@ -186,6 +186,7 @@ pub struct ChatResponse {
     pub text: String,
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
+    pub metrics: crate::response_metrics::GenerationMetrics,
 }
 
 fn settings_path(c: &Caminhos) -> PathBuf {
@@ -579,7 +580,7 @@ pub fn chat(
 }
 
 fn request_body(model: &str, messages: &[Value], max_tokens: Option<u32>) -> Value {
-    let mut body = json!({"model": model, "messages": messages, "stream": true});
+    let mut body = json!({"model": model, "messages": messages, "stream": true, "stream_options":{"include_usage":true}});
     if let Some(max_tokens) = max_tokens {
         body["max_tokens"] = json!(max_tokens);
     }
@@ -625,6 +626,19 @@ async fn chat_async(
     cancel: &AtomicBool,
     emit: &dyn Fn(&str, Value),
 ) -> Result<ChatResponse, String> {
+    let mut metrics = crate::response_metrics::Tracker::new(
+        body["model"].as_str().unwrap_or("Modelo desconhecido"),
+    );
+    if cancel.load(Ordering::Relaxed) {
+        let metrics = metrics.snapshot("cancelled");
+        emit("metricas", json!(metrics));
+        return Ok(ChatResponse {
+            text: String::new(),
+            reasoning: String::new(),
+            tool_calls: vec![],
+            metrics,
+        });
+    }
     let c = client(Duration::from_secs(900))?;
     let mut req = c
         .post(format!("{}/v1/chat/completions", base.trim_end_matches('/')).as_str())
@@ -632,10 +646,20 @@ async fn chat_async(
     if let Some(k) = key.as_deref().filter(|k| !k.is_empty()) {
         req = req.bearer_auth(k);
     }
-    let response = req
-        .send()
-        .await
-        .map_err(|e| format!("Falha ao falar com o backend: {e}"))?;
+    let pending = req.send();
+    tokio::pin!(pending);
+    let mut waiting = tokio::time::interval(Duration::from_millis(40));
+    let mut waiting_update = std::time::Instant::now();
+    let response = loop {
+        tokio::select! {
+            biased;
+            _=waiting.tick()=>{
+                if cancel.load(Ordering::Relaxed) {let metrics=metrics.snapshot("cancelled");emit("metricas",json!(metrics));return Ok(ChatResponse{text:String::new(),reasoning:String::new(),tool_calls:vec![],metrics});}
+                if waiting_update.elapsed()>=Duration::from_millis(250){emit("metricas",json!(metrics.snapshot("streaming")));waiting_update=std::time::Instant::now();}
+            },
+            response=&mut pending=>break response.map_err(|e|format!("Falha ao falar com o backend: {e}"))?,
+        }
+    };
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -651,10 +675,12 @@ async fn chat_async(
         text: String::new(),
         reasoning: String::new(),
         tool_calls: vec![],
+        metrics: crate::response_metrics::GenerationMetrics::default(),
     };
     let mut ticks = tokio::time::interval(Duration::from_millis(40));
     ticks.tick().await;
     let mut finished = false;
+    let mut last_metrics = std::time::Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             break;
@@ -663,6 +689,7 @@ async fn chat_async(
             biased;
             _ = ticks.tick() => {
                 if cancel.load(Ordering::Relaxed) { break; }
+                if last_metrics.elapsed()>=Duration::from_millis(250) {emit("metricas",json!(metrics.snapshot("streaming")));last_metrics=std::time::Instant::now();}
                 continue;
             },
             item = stream.next() => Some(item),
@@ -678,6 +705,7 @@ async fn chat_async(
             let Ok(v) = serde_json::from_str::<Value>(&event) else {
                 continue;
             };
+            metrics.observe(&v);
             let delta = &v["choices"][0]["delta"];
             if let Some(s) = delta["reasoning_content"]
                 .as_str()
@@ -717,6 +745,14 @@ async fn chat_async(
             break;
         }
     }
+    result.metrics = metrics.snapshot(if finished {
+        "completed"
+    } else if cancel.load(Ordering::Relaxed) {
+        "cancelled"
+    } else {
+        "interrupted"
+    });
+    emit("metricas", json!(result.metrics));
     if !finished && !cancel.load(Ordering::Relaxed) {
         return Err("Stream do backend terminou sem o evento final [DONE].".into());
     }
@@ -1054,10 +1090,14 @@ mod tests {
                 r#"data: {"choices":[{"delta":{"content":"<think>texto comum</think> hello"}}]}"#,
                 r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read","arguments":"{\"path\":"}}]}}]}"#,
                 r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"README.md\"}"}}]}}]}"#,
+                r#"data: {"choices":[],"usage":{"prompt_tokens":900,"completion_tokens":118},"timings":{"predicted_n":118,"predicted_ms":2200,"predicted_per_second":53.63}}"#,
                 "data: [DONE]",
             ];
             write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").unwrap();
             for event in events {
+                if event.contains("usage") {
+                    thread::sleep(Duration::from_millis(300));
+                }
                 let chunk = format!("{event}\n\n");
                 write!(s, "{:X}\r\n{chunk}\r\n", chunk.len()).unwrap();
                 s.flush().unwrap();
@@ -1080,7 +1120,21 @@ mod tests {
         assert_eq!(response.tool_calls[0].id, "call-1");
         assert_eq!(response.tool_calls[0].nome, "read");
         assert_eq!(response.tool_calls[0].argumentos, r#"{"path":"README.md"}"#);
-        assert_eq!(*events.lock().unwrap(), vec!["raciocinio", "texto"]);
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.as_str() != "metricas")
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["raciocinio", "texto"]
+        );
+        assert!(events.lock().unwrap().iter().any(|s| s == "metricas"));
+        assert_eq!(response.metrics.completion_tokens, Some(118));
+        assert_eq!(response.metrics.state, "completed");
+        assert!(response.metrics.ttft_ms.is_some());
+        assert_eq!(response.metrics.generation_ms, Some(2200.0));
     }
 
     #[test]
@@ -1106,10 +1160,13 @@ mod tests {
             None,
             json!({"model":"gguf","messages":[crate::memory::context_with_budget(&[json!({"id":1,"data":"Contexto sintético de teste"})],1024).0.unwrap()],"stream":true}),
             &cancel,
-            &|_, _| cancel.store(true, Ordering::Relaxed),
+            &|kind, _| {if kind=="texto" {cancel.store(true, Ordering::Relaxed);}},
         ))
         .unwrap();
         assert_eq!(response.text, "x");
+        assert_eq!(response.metrics.state, "cancelled");
+        assert!(response.metrics.completion_tokens.is_none());
+        assert!(response.metrics.estimated_tokens.is_none());
         closed_rx.recv_timeout(Duration::from_secs(3)).unwrap();
         server.join().unwrap();
     }
@@ -1145,6 +1202,47 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("HTTP 503"));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn metrics_cancel_before_headers_and_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = request(&mut s);
+            s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut byte = [0];
+            assert_eq!(s.read(&mut byte).unwrap_or(0), 0);
+        });
+        let cancel = AtomicBool::new(false);
+        let r = run_async(chat_async(
+            format!("http://{address}"),
+            None,
+            json!({"model":"synthetic"}),
+            &cancel,
+            &|kind, _| {
+                if kind == "metricas" {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+        ))
+        .unwrap();
+        assert_eq!(r.metrics.state, "cancelled");
+        assert!(r.metrics.ttft_ms.is_none());
+        assert!(r.metrics.total_ms < 3000.0);
+        server.join().unwrap();
+        let already_cancelled = AtomicBool::new(true);
+        let r = run_async(chat_async(
+            "http://127.0.0.1:1".into(),
+            None,
+            json!({"model":"synthetic"}),
+            &already_cancelled,
+            &|_, _| {},
+        ))
+        .unwrap();
+        assert_eq!(r.metrics.state, "cancelled");
+        assert!(r.text.is_empty());
     }
 
     #[test]
