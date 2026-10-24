@@ -308,7 +308,41 @@ fn mensagens_api(
     if !pendentes.is_empty() {
         saida.push(conteudo_imagens_lidas(&pendentes));
     }
+    let original = saida.len();
+    let saida = completar_interrompidas(saida);
+    estimado += saida.len().saturating_sub(original) * 100;
     Ok((saida, estimado))
+}
+
+/// A crash/cancel can leave persisted assistant calls without tool results.
+/// Repair only the API projection; never replay tools or renumber private memory records.
+fn completar_interrompidas(messages: Vec<Value>) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    let flush = |out: &mut Vec<Value>, pending: &mut Vec<String>| {
+        for id in pending.drain(..) {
+            out.push(json!({"role":"tool","tool_call_id":id,"content":"{\"state\":\"interrupted\",\"result_unknown\":true,\"message\":\"Resultado não registrado. Reinspecione os arquivos e solicite nova aprovação humana; não retome automaticamente.\"}"}));
+        }
+    };
+    for message in messages {
+        if message["role"] == "tool" {
+            if let Some(id) = message["tool_call_id"].as_str() {
+                pending.retain(|p| p != id);
+            }
+        } else {
+            flush(&mut out, &mut pending);
+            if let Some(calls) = message["tool_calls"].as_array() {
+                pending.extend(
+                    calls
+                        .iter()
+                        .filter_map(|c| c["id"].as_str().map(str::to_string)),
+                );
+            }
+        }
+        out.push(message);
+    }
+    flush(&mut out, &mut pending);
+    out
 }
 
 fn conteudo_imagens_lidas(imagens: &[String]) -> Value {
@@ -646,6 +680,24 @@ fn garantir_inferencia(c: &Caminhos, saida: &dyn Saida) -> Result<(), String> {
 #[cfg(test)]
 mod metrics_tests {
     use super::*;
+    #[test]
+    fn interrupted_tool_results_are_projected_without_replaying_or_changing_history() {
+        let input = vec![
+            json!({"role":"assistant","tool_calls":[{"id":"done"},{"id":"pending"}]}),
+            json!({"role":"tool","tool_call_id":"done","content":"actual result"}),
+            json!({"role":"user","content":"Continue only after fresh approval"}),
+        ];
+        let output = completar_interrompidas(input.clone());
+        assert_eq!(input.len(), 3);
+        assert_eq!(output.len(), 4);
+        assert_eq!(output[1], input[1]);
+        assert_eq!(output[2]["tool_call_id"], "pending");
+        let result: Value = serde_json::from_str(output[2]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(result["state"], "interrupted");
+        assert_eq!(result["result_unknown"], true);
+        assert_eq!(output[3], input[2]);
+        assert_eq!(completar_interrompidas(output.clone()), output);
+    }
     #[test]
     fn response_metrics_persist_in_json_and_legacy_sessions_still_load() {
         let root = std::env::temp_dir().join(format!(
