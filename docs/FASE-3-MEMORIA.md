@@ -65,7 +65,7 @@ Excluir uma memória elimina seu registro/indexação/fontes da memória; fontes
 
 ## Recursos e limites
 
-Sem RAM/VRAM de segundo modelo. Estimativa: cache SQLite de 2 MiB por conexão, overhead da biblioteca e resultados limitados; WAL/FTS e tamanho em disco crescem com os dados. Exportação escreve linhas incrementalmente. Backups e restauração são ações explícitas e podem aguardar acesso ao armazenamento. Medições de consumo/latência no Windows 10 e comportamento factual do modelo real continuam pendentes. CI usa Windows Server 2022 GNU/MSVC, não substitui validação de CPU sem AVX2, WebView2 e drivers reais.
+Sem RAM/VRAM de segundo modelo. Estimativa: cache SQLite de 2 MiB por conexão, overhead da biblioteca e resultados limitados; WAL/FTS e tamanho em disco crescem com os dados. Exportação escreve linhas incrementalmente. A validação de hash usa blocos de 64 KiB, sem carregar o backup inteiro em RAM. Backups e restauração são ações explícitas e podem aguardar acesso ao armazenamento. Medições de consumo/latência no Windows 10 e comportamento factual do modelo real continuam pendentes. CI usa Windows Server 2022 GNU/MSVC, não substitui validação de CPU sem AVX2, WebView2 e drivers reais.
 
 Testes sintéticos cobrem criação/migração/reabertura/FTS/classificação/dedup/conflitos/CRUD/orçamento/projetos/troca de backend/SSE/cancelamento/backup/restauração/rollback/privacidade/segredos/JSON legado/contexto não privilegiado. O workflow executa Rust nos dois toolchains, Python, Node, formatação, launcher e varredura de credenciais antes de gerar o ZIP.
 

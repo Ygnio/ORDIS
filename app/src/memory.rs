@@ -722,8 +722,18 @@ fn validate_backup(path: &Path) -> Result<String, String> {
     if fk.is_some() {
         return Err("Referências inválidas no backup.".into());
     }
-    let bytes = std::fs::read(path).map_err(|_| "Falha ao ler backup.")?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|_| "Falha ao ler backup.")?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buffer).map_err(|_| "Falha ao ler backup.")?;
+        if n == 0 {
+            break;
+        }
+        digest.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 fn validate(m: &Input) -> Result<(), String> {
     if !KINDS.contains(&m.kind.as_str())
