@@ -169,7 +169,13 @@ async fn get_json(url: &str, key: Option<&str>, timeout: Duration) -> Result<Val
     let r = req
         .send()
         .await
-        .map_err(|e| format!("Falha de conexão: {e}"))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!("Tempo limite ao conectar ao servidor: {e}")
+            } else {
+                format!("Falha de conexão: {e}")
+            }
+        })?;
     let status = r.status();
     if !status.is_success() {
         let body = r.text().await.unwrap_or_default();
@@ -790,7 +796,11 @@ mod tests {
             Duration::from_millis(30),
         ))
         .unwrap_err();
-        assert!(err.to_lowercase().contains("timeout") || err.to_lowercase().contains("timed out"));
+        assert!(
+            err.to_lowercase().contains("tempo limite")
+                || err.to_lowercase().contains("timeout")
+                || err.to_lowercase().contains("timed out")
+        );
         server.join().unwrap();
     }
 }
