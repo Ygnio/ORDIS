@@ -60,7 +60,8 @@ jobs:
           $forbidden = $tracked | Where-Object {
             $_ -match '(^|/)(runtime|target|node_modules|venv|\.venv|__pycache__)(/|$)' -or
             $_ -match '(^|/)(\.env($|\.)|AGENTS\.local\.md|api_tokens\.yml|token\.dpapi|llama-api-key\.dpapi)$' -or
-            $_ -match '\.(gguf|exl3|safetensors|dpapi|pem|p12|pfx|key|log)$'
+            $_ -match '\.(gguf|exl3|safetensors|dpapi|sqlite|sqlite3|db|wal|shm|embedding|embeddings|pem|p12|pfx|key|log)$' -or
+            $_ -match '(?i)(^|/)(private|dados-privados|lucille-local|memorias|memories|embeddings|backups)(/|$)'
           }
           if ($forbidden) {
             Write-Error "Private/generated files are tracked:`n$($forbidden -join "`n")"
@@ -86,12 +87,61 @@ jobs:
           cargo test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build Windows test binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path $env:RUNNER_TEMP 'cargo-build-gnu-release.log'
+          cargo build --release --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assemble privacy-safe test ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'ORDIS-Windows-Test'
+          $appOut = Join-Path $stage 'app'
+          New-Item -ItemType Directory -Force $appOut, (Join-Path $appOut 'ui'), (Join-Path $stage 'config'), (Join-Path $stage 'scripts'), (Join-Path $stage 'agente/workspace'), (Join-Path $stage 'docs') | Out-Null
+          Copy-Item app/target/release/ordis.exe (Join-Path $appOut 'ORDIS.exe')
+          Copy-Item app/target/release/ordis-cli.exe (Join-Path $appOut 'ordis-cli.exe')
+          Copy-Item app/target/release/WebView2Loader.dll $appOut
+          Copy-Item app/ui/ordis.png (Join-Path $appOut 'ui/ordis.png')
+          Copy-Item config/paths.json, config/tabbyapi-inicial.yml, config/ordis_qwen_thinking.yml, config/runtime-packages.txt, config/images-requirements.lock.txt, config/README.md (Join-Path $stage 'config')
+          Copy-Item scripts/serve_inference.py, scripts/service_shutdown.py, scripts/agent_web_search.py, scripts/ordis_token_monitor.py, scripts/token_counter_paths.py (Join-Path $stage 'scripts')
+          Copy-Item agente/workspace/AGENTS.md (Join-Path $stage 'agente/workspace/AGENTS.md')
+          Copy-Item docs/LLAMA-CPP-GGUF.md, docs/TESTE-WINDOWS-LLAMA-CPP.md (Join-Path $stage 'docs')
+          Copy-Item scripts/Iniciar-ORDIS-Teste.ps1 (Join-Path $stage 'Iniciar-ORDIS-Teste.ps1')
+          $forbidden = Get-ChildItem $stage -Recurse -File | Where-Object {
+            $_.Extension -match '^\.(gguf|exl3|safetensors|dpapi|sqlite|sqlite3|db|wal|shm|pem|p12|pfx|key|log)$' -or
+            $_.Name -match '(?i)(api[_-]?tokens?\.yml|llama-api-key|secret|credential|history|memory|embedding|backup|\.env)'
+          }
+          if ($forbidden) { throw "Arquivo privado/indevido no pacote: $($forbidden.FullName -join ', ')" }
+          $zip = Join-Path $env:RUNNER_TEMP 'ORDIS-Windows-Test.zip'
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Select-Object FullName, Length | Format-List
+
+      - name: Upload Windows test ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORDIS-Windows-Test
+          path: ${{ runner.temp }}/ORDIS-Windows-Test.zip
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload GNU build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: cargo-test-gnu-log
           path: ${{ runner.temp }}/cargo-test-gnu.log
+          if-no-files-found: ignore
+
+      - name: Upload GNU release build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-build-gnu-release-log
+          path: ${{ runner.temp }}/cargo-build-gnu-release.log
           if-no-files-found: ignore
 
   windows-msvc-compatibility:
