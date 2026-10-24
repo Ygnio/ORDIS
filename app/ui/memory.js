@@ -78,7 +78,7 @@ if (typeof window !== 'undefined') (() => {
   }
   bind('project-new',() => projectEditor()); bind('project-load',() => {const p=projects.find(p => p.id === Number(get('project-edit').value)); if(p) projectEditor(p);});
   get('project-form').addEventListener('submit',async e => {e.preventDefault(); try { const p={id:projectId}; for(const k of Object.keys(projectLabels)) p[k]=document.getElementById(`mem-p-${k}`).value; await call('project_save',p); get('project-form').hidden=true; await refresh(); message('Projeto salvo como referência local.'); } catch(err) {message(String(err));} });
-  bind('consolidate',async () => {get('consolidate').disabled = true; try { const r=await call('consolidate'); await refresh(); message(`${r.processed} lotes consolidados${r.interrupted ? ' · interrompido' : ''}. Revise os candidatos.`); } finally {get('consolidate').disabled = false;} });
+  bind('consolidate',async () => {get('consolidate').disabled = true; try { const r=await call('consolidate'); await refresh(); message(r.deferred?'Aguarde a resposta terminar antes de consolidar manualmente.':`${r.processed} lotes consolidados${r.interrupted ? ' · interrompido' : ''}. Revise os candidatos.`); } finally {get('consolidate').disabled = false;} });
   bind('stop',async () => {await invoke('memory_stop');message('Interrupção solicitada; o lote atual será concluído.');});
   async function backups() {select(get('backup-list'),(await call('backups')).map(x => [x,x]),'Selecione um backup');}
   bind('technical-export',async()=>{const r=await call('technical_export');message(`Relatório sanitizado salvo localmente: ${r.path}. Contém somente códigos, contagens e tempos.`);});

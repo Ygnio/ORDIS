@@ -1338,7 +1338,13 @@ pub fn record(
 ) -> Result<(), String> {
     let path = database_path(c)?;
     if let Ok(_guard) = ACCESS.try_lock() {
-        return Store::open(&path)?.record(conversation, title, ordinal as i64, role, text);
+        let result = Store::open(&path)
+            .and_then(|mut s| s.record(conversation, title, ordinal as i64, role, text));
+        if result.is_err() && !private_for_memory(text) && text.len() <= 64000 {
+            let _ = write_pending(&path, conversation, ordinal);
+            note("record_retry_after_error");
+        }
+        return result;
     }
     if private_for_memory(text) || text.len() > 64000 || !["user", "assistant"].contains(&role) {
         note("record_skipped_private_or_oversized");
@@ -1406,51 +1412,70 @@ fn replay_pending(c: &Caminhos, s: &mut Store) -> Result<usize, String> {
         if ACTIVE_CHATS.load(Ordering::SeqCst) > 0 {
             break;
         }
-        let path = entry.path();
-        if path.is_symlink() || entry.metadata().map(|m| m.len() > 4096).unwrap_or(true) {
-            note("retry_invalid_reference");
-            continue;
-        }
-        let data: Value = match std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-        {
-            Some(v) => v,
-            None => {
-                note("retry_invalid_reference");
-                let _ = std::fs::rename(&path, path.with_extension("failed"));
-                continue;
-            }
-        };
-        let id = data["conversation"].as_str().unwrap_or("");
-        let ordinal = data["ordinal"].as_u64().unwrap_or(u64::MAX);
-        let original = if id.len() <= 100 && ordinal <= 1000000 {
-            crate::agente::abrir(c, id).ok()
-        } else {
-            None
-        };
-        let message = original
-            .as_ref()
-            .and_then(|v| v.mensagens.get(ordinal as usize));
-        if let (Some(session), Some(message)) = (original.as_ref(), message) {
-            s.record(
-                id,
-                &session.titulo,
-                ordinal as i64,
-                &message.papel,
-                &message.texto,
-            )?;
-            std::fs::remove_file(&path).map_err(|_| {
-                "Registro salvo; referência pendente será deduplicada na próxima tentativa."
-            })?;
-            note("record_deferred_flushed");
+        if replay_one(c, s, &entry.path())? {
             count += 1;
-        } else {
-            note("retry_source_missing");
-            let _ = std::fs::rename(&path, path.with_extension("failed"));
         }
     }
     Ok(count)
+}
+
+fn replay_one(c: &Caminhos, s: &mut Store, path: &Path) -> Result<bool, String> {
+    if path.is_symlink()
+        || std::fs::symlink_metadata(path)
+            .map(|m| m.len() > 4096)
+            .unwrap_or(true)
+    {
+        note("retry_invalid_reference");
+        let _ = std::fs::rename(path, path.with_extension("failed"));
+        return Ok(false);
+    }
+    let data: Value = match std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+    {
+        Some(v) => v,
+        None => {
+            note("retry_invalid_reference");
+            let _ = std::fs::rename(&path, path.with_extension("failed"));
+            return Ok(false);
+        }
+    };
+    let id = data["conversation"].as_str().unwrap_or("");
+    let ordinal = data["ordinal"].as_u64().unwrap_or(u64::MAX);
+    let original = if !id.is_empty()
+        && id.len() <= 100
+        && ordinal <= 1000000
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && std::fs::metadata(c.runtime.join("agente/sessoes").join(format!("{id}.json")))
+            .map(|m| m.len() <= 8 * 1024 * 1024)
+            .unwrap_or(false)
+    {
+        crate::agente::abrir(c, id).ok()
+    } else {
+        None
+    };
+    let message = original
+        .as_ref()
+        .and_then(|v| v.mensagens.get(ordinal as usize));
+    if let (Some(session), Some(message)) = (original.as_ref(), message) {
+        s.record(
+            id,
+            &session.titulo,
+            ordinal as i64,
+            &message.papel,
+            &message.texto,
+        )?;
+        std::fs::remove_file(&path).map_err(|_| {
+            "Registro salvo; referência pendente será deduplicada na próxima tentativa."
+        })?;
+        note("record_deferred_flushed");
+        return Ok(true);
+    } else {
+        note("retry_source_missing");
+        let _ = std::fs::rename(&path, path.with_extension("failed"));
+    }
+
+    Ok(false)
 }
 
 pub fn retrieve(c: &Caminhos, query: &str, conversation: &str) -> Result<Option<Value>, String> {
@@ -1630,6 +1655,30 @@ pub fn start_worker(c: &Caminhos) {
 }
 /// One allowlisted UI API. No arbitrary SQL, filesystem paths, HTTP, Git or shell operations.
 pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> {
+    if action == "technical" || action == "technical_export" {
+        let report=with_store(c,|s|s.technical()).unwrap_or_else(|_|json!({"format":"lucille-technical-v1","schema":VERSION,"store_unavailable":true,"runtime":RUNTIME_DIAGNOSTICS.lock().map(|d|json!(*d)).unwrap_or(json!({}))}));
+        if action == "technical" {
+            return Ok(report);
+        }
+        let path = database_path(c)?;
+        let dir = path
+            .parent()
+            .ok_or("Pasta privada inválida.")?
+            .join("technical-reports");
+        std::fs::create_dir_all(&dir).map_err(|_| "Pasta técnica indisponível.")?;
+        let file = dir.join(format!(
+            "technical-memory-report-{}.json",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(now())
+        ));
+        let out = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&file)
+            .map_err(|_| "Falha ao criar relatório técnico.")?;
+        serde_json::to_writer_pretty(out, &report)
+            .map_err(|_| "Falha ao salvar relatório técnico.")?;
+        return Ok(json!({"path":file}));
+    }
     if action == "consolidate" {
         return run_consolidation(c, false);
     }

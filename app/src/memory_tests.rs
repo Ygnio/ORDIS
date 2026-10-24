@@ -915,13 +915,12 @@ fn durable_retry_replays_only_referenced_message_and_is_idempotent() {
     .unwrap();
     write_pending(&s.path, "synthetic-retry", 0).unwrap();
     // Directly replaying is the same startup path; no in-memory message queue is needed.
-    if ACTIVE_CHATS.load(Ordering::SeqCst) == 0 {
-        replay_pending(&c, &mut s).unwrap();
-        assert_eq!(s.list("", None, "preference", "").unwrap().len(), 1);
-        write_pending(&s.path, "synthetic-retry", 0).unwrap();
-        replay_pending(&c, &mut s).unwrap();
-        assert_eq!(s.list("", None, "preference", "").unwrap().len(), 1);
-    }
+    let marker = pending_dir(&s.path).unwrap().join("synthetic-retry-0.json");
+    replay_one(&c, &mut s, &marker).unwrap();
+    assert_eq!(s.list("", None, "preference", "").unwrap().len(), 1);
+    write_pending(&s.path, "synthetic-retry", 0).unwrap();
+    replay_one(&c, &mut s, &marker).unwrap();
+    assert_eq!(s.list("", None, "preference", "").unwrap().len(), 1);
     assert!(write_pending(&s.path, "../escape", 0).is_err());
 }
 #[test]
