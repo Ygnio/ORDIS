@@ -157,6 +157,14 @@
     else if (imagens && imagens.length) grupoImagens(imagens, d.querySelector('.conteudo'));
   }
 
+  function usedMemories(ids) {
+    if(!ids?.length)return;
+    const d=el('details','response-memory');d.append(el('summary','',`Memórias utilizadas: ${ids.map(id=>'#'+id).join(', ')}`));
+    const content=el('div');d.append(content);let loading=false;
+    d.addEventListener('toggle',async()=>{if(!d.open||loading)return;loading=true;try{const rows=await invoke('memory_action',{action:'used',args:{ids}});content.replaceChildren();for(const row of rows)content.append(el('p','',`#${row.id} · ${row.kind} · ${row.state}: ${row.content}`));if(rows.length<ids.length)content.append(el('p','','Algumas referências foram excluídas e seu conteúdo não é exibido.'));}catch(_){content.textContent='Memória local indisponível.';}finally{loading=false;}});
+    bloco?.append(d);
+  }
+
   function renderizar(sessao) {
     const area = $('mensagens');
     area.replaceChildren();
@@ -180,6 +188,7 @@
           bloco.textos.push(m.texto);
         }
         (m.chamadas || []).forEach((ch) => bloco.append(detalhesFerramenta(ch)));
+        usedMemories(m.memoria_ids);
         if (m.metricas) window.ordisResponseMetrics.mount(bloco, m.metricas);
       } else if (m.papel === 'tool' && bloco) {
         preencherResultado(bloco, m.id_chamada, m.texto, m.erro, m.imagens || []);
@@ -547,6 +556,9 @@
         }
         segmento.raciocinio.querySelector('.conteudo').textContent += d.texto;
         if (segmento.raciocinio.open) rolar(false);
+        break;
+      case 'memorias':
+        usedMemories(d.ids);
         break;
       case 'metricas':
         if (!segmento) break;

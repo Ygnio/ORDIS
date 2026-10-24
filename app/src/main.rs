@@ -5,6 +5,7 @@ mod backends;
 mod controle;
 mod diagnostics;
 mod ferramentas;
+mod identity;
 mod imagens;
 mod memory;
 mod modelos;

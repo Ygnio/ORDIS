@@ -10,11 +10,13 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 static ACCESS: Mutex<()> = Mutex::new(());
+static CONSOLIDATING: AtomicBool = AtomicBool::new(false);
 pub static STOP_CONSOLIDATION: AtomicBool = AtomicBool::new(false);
-const VERSION: i64 = 2;
-const MIGRATIONS: [&str; 2] = [
+const VERSION: i64 = 3;
+const MIGRATIONS: [&str; 3] = [
     include_str!("migrations/001_memory.sql"),
     include_str!("migrations/002_fts.sql"),
+    include_str!("migrations/003_identity.sql"),
 ];
 const KINDS: [&str; 11] = [
     "fact",
@@ -184,6 +186,44 @@ impl Store {
             path: path.into(),
         })
     }
+    fn profile(&self) -> Result<Option<crate::identity::Profile>, String> {
+        self.db
+            .query_row(
+                "SELECT name,description,personality,instructions FROM identity_profile WHERE id=1",
+                [],
+                |r| {
+                    Ok(crate::identity::Profile {
+                        name: r.get(0)?,
+                        description: r.get(1)?,
+                        personality: r.get(2)?,
+                        instructions: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(error)
+    }
+    fn dashboard(&self) -> Result<Value, String> {
+        let mut states = serde_json::Map::new();
+        for state in STATES {
+            let n: i64 = self
+                .db
+                .query_row(
+                    "SELECT count(*) FROM memories WHERE state=?1",
+                    [state],
+                    |r| r.get(0),
+                )
+                .map_err(error)?;
+            states.insert(state.into(), json!(n));
+        }
+        let mut q=self.db.prepare("SELECT conversation_id,memory_ids,estimated_tokens,created_at FROM retrieval_audit ORDER BY id DESC LIMIT 20").map_err(error)?;
+        let recent=q.query_map([],|r|Ok(json!({"conversation":r.get::<_,String>(0)?,"ids":serde_json::from_str::<Value>(&r.get::<_,String>(1)?).unwrap_or(json!([])),"tokens":r.get::<_,i64>(2)?,"date":r.get::<_,i64>(3)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+        let maintenance=self.db.query_row("SELECT state,processed,updated_at FROM maintenance WHERE id=1",[],|r|Ok(json!({"state":r.get::<_,String>(0)?,"processed":r.get::<_,i64>(1)?,"date":r.get::<_,i64>(2)?}))).map_err(error)?;
+        let pending:i64=self.db.query_row("SELECT count(*) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' AND m.ordinal>coalesce(c.last_ordinal,-1)",[],|r|r.get(0)).map_err(error)?;
+        Ok(
+            json!({"states":states,"recent":recent,"maintenance":maintenance,"pending_messages":pending,"running":CONSOLIDATING.load(Ordering::SeqCst)}),
+        )
+    }
     fn options(&self) -> Result<Options, String> {
         self.db
             .query_row(
@@ -265,6 +305,8 @@ impl Store {
         validate(m)?;
         let tx = self.db.savepoint().map_err(error)?;
         let fp = fingerprint(&m.content);
+        if source.is_some() && tx.query_row("SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND kind=?2 AND project_id IS ?3)",params![fp,m.kind,m.project_id],|r|r.get::<_,bool>(0)).map_err(error)? {return Ok(0);}
+
         let duplicate:Option<i64>=tx.query_row("SELECT id FROM memories WHERE fingerprint=?1 AND kind=?2 AND project_id IS ?3 AND (?4 IS NULL OR id<>?4) LIMIT 1",params![fp,m.kind,m.project_id,id],|r|r.get(0)).optional().map_err(error)?;
         if id.is_some() && duplicate.is_some() {
             return Err("Já existe uma memória com esse conteúdo e categoria no projeto.".into());
@@ -279,14 +321,25 @@ impl Store {
         let saved = if let Some(d) = duplicate {
             d
         } else if let Some(id) = id {
+            tx.execute("INSERT OR IGNORE INTO rejected_memories SELECT fingerprint,kind,project_id,?2 FROM memories WHERE id=?1 AND fingerprint<>?3",params![id,now(),fp]).map_err(error)?;
             let changed=tx.execute("UPDATE memories SET kind=?1,content=?2,project_id=?3,fact_key=?4,state=?5,importance=?6,fingerprint=?7,updated_at=?8 WHERE id=?9",params![m.kind,m.content.trim(),m.project_id,m.fact_key,state,m.importance,fp,now(),id]).map_err(error)?;
             if changed != 1 {
                 return Err("Memória não encontrada.".into());
             }
             id
         } else {
-            tx.execute("INSERT INTO memories(kind,content,project_id,fact_key,state,importance,provenance,fingerprint,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",params![m.kind,m.content.trim(),m.project_id,m.fact_key,state,m.importance,provenance,fp,now()]).map_err(error)?;
-            tx.last_insert_rowid()
+            let next_id: i64 = tx
+                .query_row("SELECT next_id FROM memory_sequence WHERE id=1", [], |r| {
+                    r.get(0)
+                })
+                .map_err(error)?;
+            tx.execute(
+                "UPDATE memory_sequence SET next_id=next_id+1 WHERE id=1",
+                [],
+            )
+            .map_err(error)?;
+            tx.execute("INSERT INTO memories(id,kind,content,project_id,fact_key,state,importance,provenance,fingerprint,created_at,updated_at) VALUES(?10,?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",params![m.kind,m.content.trim(),m.project_id,m.fact_key,state,m.importance,provenance,fp,now(),next_id]).map_err(error)?;
+            next_id
         };
         let (conversation, ordinal) = source
             .map(|(c, o)| (Some(c), Some(o)))
@@ -312,6 +365,8 @@ impl Store {
     }
     fn delete(&mut self, id: i64) -> Result<(), String> {
         let tx = self.db.transaction().map_err(error)?;
+        tx.execute("INSERT OR IGNORE INTO rejected_memories SELECT fingerprint,kind,project_id,?2 FROM memories WHERE id=?1",params![id,now()]).map_err(error)?;
+        tx.execute("UPDATE memories SET state='obsolete',updated_at=?2 WHERE kind='summary' AND id IN (SELECT a.memory_id FROM sources a JOIN sources b ON a.conversation_id=b.conversation_id AND a.ordinal=b.ordinal WHERE b.memory_id=?1)",params![id,now()]).map_err(error)?;
         tx.execute("DELETE FROM memories WHERE id=?1", [id])
             .map_err(error)?;
         tx.execute(
@@ -444,9 +499,6 @@ impl Store {
             return Ok(None);
         }
         let fts = search_terms(query);
-        if fts.is_empty() {
-            return Ok(None);
-        }
         let project_id: Option<i64> = self
             .db
             .query_row(
@@ -457,11 +509,26 @@ impl Store {
             .optional()
             .map_err(error)?
             .unwrap_or(o.project_id);
-        let mut stmt=self.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) ORDER BY (bm25(memories_fts) - m.importance*0.25 - CASE WHEN m.project_id IS ?2 AND ?2 IS NOT NULL THEN 2 ELSE 0 END - CASE WHEN m.kind IN ('constraint','decision','preference') THEN 0.5 ELSE 0 END - CASE WHEN m.provenance IN ('user','manual') THEN 0.5 ELSE 0 END - 1.0/(1.0+max(0,?3-m.updated_at)/86400.0)) ASC LIMIT 60").map_err(error)?;
-        let rows=stmt.query_map(params![fts,project_id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
-        let (context, ids, tokens) = context_with_budget(&rows, o.token_budget);
+        let mut rows: Vec<Value> = Vec::new();
+        if !fts.is_empty() {
+            let mut stmt=self.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) ORDER BY (bm25(memories_fts) - m.importance*0.25 - CASE WHEN m.project_id IS ?2 AND ?2 IS NOT NULL THEN 2 ELSE 0 END - CASE WHEN m.kind IN ('constraint','decision','preference') THEN 0.5 ELSE 0 END - CASE WHEN m.provenance IN ('user','manual') THEN 0.5 ELSE 0 END - 1.0/(1.0+max(0,?3-m.updated_at)/86400.0)) ASC LIMIT 60").map_err(error)?;
+            rows=stmt.query_map(params![fts,project_id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+        }
+        let mut preferences=self.db.prepare("SELECT id,kind,content,provenance,project_id FROM memories WHERE state='active' AND kind IN ('preference','constraint') AND (project_id IS NULL OR project_id IS ?1) ORDER BY importance DESC,updated_at DESC LIMIT 20").map_err(error)?;
+        let durable=preferences.query_map([project_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+        let mut merged = durable;
+        for row in rows {
+            if !merged.iter().any(|v| v["id"] == row["id"]) {
+                merged.push(row);
+            }
+        }
+        let rows = merged;
+        let (mut context, ids, tokens) = context_with_budget(&rows, o.token_budget);
         self.db.execute("INSERT INTO retrieval_audit(conversation_id,memory_ids,estimated_tokens,created_at) VALUES(?1,?2,?3,?4)",params![conversation,json!(ids).to_string(),tokens as i64,now()]).map_err(error)?;
         self.db.execute("DELETE FROM retrieval_audit WHERE id NOT IN (SELECT id FROM retrieval_audit ORDER BY id DESC LIMIT 1000)",[]).map_err(error)?;
+        if let Some(v) = context.as_mut() {
+            v["_lucille_ids"] = json!(ids);
+        }
         Ok(context)
     }
     fn backup_dir(&self) -> PathBuf {
@@ -499,6 +566,10 @@ impl Store {
             "change_history",
             "retrieval_audit",
             "schema_migrations",
+            "identity_profile",
+            "rejected_memories",
+            "maintenance",
+            "memory_sequence",
         ]
         .iter()
         .enumerate()
@@ -595,6 +666,22 @@ impl Store {
         self.db
             .execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;")
             .map_err(error)?;
+        let version: i64 = self
+            .db
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(error)?;
+        for v in version..VERSION {
+            let tx = self.db.transaction().map_err(error)?;
+            tx.execute_batch(MIGRATIONS[v as usize]).map_err(error)?;
+            tx.execute(
+                "INSERT INTO schema_migrations VALUES(?1,?2)",
+                params![v + 1, now()],
+            )
+            .map_err(error)?;
+            tx.pragma_update(None, "user_version", v + 1)
+                .map_err(error)?;
+            tx.commit().map_err(error)?;
+        }
         Ok(safety)
     }
     fn stats(&self) -> Result<Value, String> {
@@ -610,21 +697,42 @@ impl Store {
         )
     }
     fn consolidate_one(&mut self) -> Result<bool, String> {
-        let next:Option<(String,i64)>=self.db.query_row("SELECT m.conversation_id,max(m.ordinal) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' GROUP BY m.conversation_id HAVING max(m.ordinal)>coalesce(max(c.last_ordinal),-1) ORDER BY m.conversation_id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(error)?;
-        let Some((id, last)) = next else {
+        let next:Option<(String,i64)>=self.db.query_row("SELECT m.conversation_id,coalesce(c.last_ordinal,-1) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' AND m.ordinal>coalesce(c.last_ordinal,-1) ORDER BY m.conversation_id,m.ordinal LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(error)?;
+        let Some((id, after)) = next else {
             return Ok(false);
         };
-        let mut q=self.db.prepare("SELECT ordinal,content FROM messages WHERE conversation_id=?1 AND role='user' ORDER BY ordinal DESC LIMIT 20").map_err(error)?;
+        let mut q=self.db.prepare("SELECT ordinal,content FROM messages WHERE conversation_id=?1 AND role='user' AND ordinal>?2 ORDER BY ordinal LIMIT 20").map_err(error)?;
         let rows = q
-            .query_map([&id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .query_map(params![id, after], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
             .map_err(error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(error)?;
+        let last = rows.last().map(|r| r.0).unwrap_or(after);
         drop(q);
+        let mut filtered = Vec::new();
+        for (ordinal, text) in rows {
+            let rejected: bool = self
+                .db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1)",
+                    [fingerprint(&text)],
+                    |r| r.get(0),
+                )
+                .map_err(error)?;
+            if !rejected {
+                filtered.push((ordinal, text));
+            }
+        }
+        let rows = filtered;
+        if rows.is_empty() {
+            self.db.execute("INSERT INTO consolidation VALUES(?1,?2,NULL) ON CONFLICT(conversation_id) DO UPDATE SET last_ordinal=excluded.last_ordinal",params![id,last]).map_err(error)?;
+            return Ok(true);
+        }
         // Extractive digest: exact user excerpts, no model hypotheses promoted to facts.
         let content = rows
             .iter()
-            .rev()
             .map(|(_, s)| s.chars().take(240).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
@@ -639,6 +747,10 @@ impl Store {
                 |r| r.get(0),
             )
             .map_err(error)?;
+        let mut content = content;
+        while content.len() > 8000 {
+            content.pop();
+        }
         let input = Input {
             kind: "summary".into(),
             content,
@@ -667,9 +779,12 @@ impl Store {
         let mid = self.put(None, &input, "extractive", Some((&id, last)))?;
         let tx = self.db.transaction().map_err(error)?;
         for (ordinal, _) in rows {
+            if mid == 0 {
+                break;
+            }
             tx.execute("INSERT OR IGNORE INTO sources(memory_id,conversation_id,ordinal,description,created_at) VALUES(?1,?2,?3,'trecho literal do usuário',?4)",params![mid,id,ordinal,now()]).map_err(error)?;
         }
-        tx.execute("INSERT INTO consolidation VALUES(?1,?2,?3) ON CONFLICT(conversation_id) DO UPDATE SET last_ordinal=excluded.last_ordinal,memory_id=excluded.memory_id",params![id,last,mid]).map_err(error)?;
+        tx.execute("INSERT INTO consolidation VALUES(?1,?2,?3) ON CONFLICT(conversation_id) DO UPDATE SET last_ordinal=excluded.last_ordinal,memory_id=excluded.memory_id",params![id,last,(mid!=0).then_some(mid)]).map_err(error)?;
         tx.commit().map_err(error)?;
         Ok(true)
     }
@@ -695,12 +810,12 @@ fn validate_backup(path: &Path) -> Result<String, String> {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(error)?;
-    if integrity != "ok" || version != VERSION {
+    if integrity != "ok" || !(2..=VERSION).contains(&version) {
         return Err("Backup incompatível ou corrompido.".into());
     }
     // Require precisely this application's schema, including triggers. No imported SQL is executed.
     let fresh = Connection::open_in_memory().map_err(error)?;
-    for sql in MIGRATIONS {
+    for sql in MIGRATIONS.iter().take(version as usize) {
         fresh.execute_batch(sql).map_err(error)?;
     }
     let schema = |c: &Connection| -> Result<Vec<(String, String, String)>, String> {
@@ -908,26 +1023,140 @@ fn with_chat_store<T>(
     f(&mut store)
 }
 
+fn legacy_present(c: &Caminhos) -> bool {
+    crate::ferramentas::workspace(c)
+        .join("AGENTS.local.md")
+        .is_file()
+}
+fn legacy_profile(c: &Caminhos) -> crate::identity::Profile {
+    crate::identity::Profile::legacy(
+        &std::fs::read_to_string(crate::ferramentas::workspace(c).join("AGENTS.local.md"))
+            .unwrap_or_default(),
+    )
+}
+pub fn identity_for_chat(c: &Caminhos) -> Result<crate::identity::Profile, String> {
+    let path = database_path(c)?;
+    if !path.exists() {
+        return Ok(legacy_profile(c));
+    }
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(error)?;
+    db.busy_timeout(Duration::from_millis(100)).map_err(error)?;
+    let has:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='identity_profile' AND type='table')",[],|r|r.get(0)).map_err(error)?;
+    if !has {
+        return Ok(legacy_profile(c));
+    }
+    let profile = db
+        .query_row(
+            "SELECT name,description,personality,instructions FROM identity_profile WHERE id=1",
+            [],
+            |r| {
+                Ok(crate::identity::Profile {
+                    name: r.get(0)?,
+                    description: r.get(1)?,
+                    personality: r.get(2)?,
+                    instructions: r.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(error)?;
+    Ok(profile.unwrap_or_else(|| legacy_profile(c)))
+}
+
 /// One allowlisted UI API. No arbitrary SQL, filesystem paths, HTTP, Git or shell operations.
 pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> {
     if action == "consolidate" {
+        if CONSOLIDATING.swap(true, Ordering::SeqCst) {
+            return Err("Consolidação já está em andamento.".into());
+        }
+        struct RunningGuard;
+        impl Drop for RunningGuard {
+            fn drop(&mut self) {
+                CONSOLIDATING.store(false, Ordering::SeqCst);
+            }
+        }
+        let _running = RunningGuard;
         STOP_CONSOLIDATION.store(false, Ordering::Relaxed);
         let mut count = 0;
-        for _ in 0..20 {
-            if STOP_CONSOLIDATION.load(Ordering::Relaxed) {
-                break;
+        let result = (|| -> Result<(), String> {
+            with_store(c, |s| {
+                s.db.execute(
+                    "UPDATE maintenance SET state='running',processed=0,updated_at=?1 WHERE id=1",
+                    [now()],
+                )
+                .map_err(error)?;
+                Ok(())
+            })?;
+            for _ in 0..20 {
+                if STOP_CONSOLIDATION.load(Ordering::Relaxed) {
+                    break;
+                }
+                if !with_store(c, |s| s.consolidate_one())? {
+                    break;
+                }
+                count += 1;
+                with_store(c, |s| {
+                    s.db.execute(
+                        "UPDATE maintenance SET processed=?1,updated_at=?2 WHERE id=1",
+                        params![count, now()],
+                    )
+                    .map_err(error)?;
+                    Ok(())
+                })?;
+                std::thread::yield_now();
             }
-            if !with_store(c, |s| s.consolidate_one())? {
-                break;
-            }
-            count += 1;
-            std::thread::yield_now();
-        }
-        return Ok(
-            json!({"processed":count,"interrupted":STOP_CONSOLIDATION.load(Ordering::Relaxed)}),
-        );
+            Ok(())
+        })();
+        let interrupted = STOP_CONSOLIDATION.load(Ordering::Relaxed);
+        let state = if result.is_err() {
+            "error"
+        } else if interrupted {
+            "interrupted"
+        } else {
+            "completed"
+        };
+        with_store(c, |s| {
+            s.db.execute(
+                "UPDATE maintenance SET state=?1,processed=?2,updated_at=?3 WHERE id=1",
+                params![state, count, now()],
+            )
+            .map_err(error)?;
+            Ok(())
+        })?;
+        result?;
+        return Ok(json!({"processed":count,"interrupted":interrupted}));
     }
     with_store(c, |s| match action {
+        "identity_get" => Ok(
+            json!({"profile":s.profile()?.unwrap_or_else(||legacy_profile(c)),"saved":s.profile()?.is_some(),"legacy_present":legacy_present(c)}),
+        ),
+        "identity_save" => {
+            let profile: crate::identity::Profile =
+                serde_json::from_value(args).map_err(|_| "Perfil inválido.")?;
+            profile.validate()?;
+            s.db.execute("INSERT INTO identity_profile VALUES(1,?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,personality=excluded.personality,instructions=excluded.instructions,updated_at=excluded.updated_at",params![profile.name.trim(),profile.description,profile.personality,profile.instructions,now()]).map_err(error)?;
+            Ok(json!(true))
+        }
+        "dashboard" => s.dashboard(),
+        "used" => {
+            let ids = args["ids"].as_array().ok_or("IDs inválidos.")?;
+            if ids.len() > 60 {
+                return Err("Muitas referências.".into());
+            }
+            let mut out = Vec::new();
+            for id in ids {
+                let Some(id) = id.as_i64() else {
+                    continue;
+                };
+                let row=s.db.query_row("SELECT id,kind,state,content FROM memories WHERE id=?1",[id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"content":r.get::<_,String>(3)?}))).optional().map_err(error)?;
+                if let Some(v) = row {
+                    out.push(v);
+                }
+            }
+            Ok(json!(out))
+        }
+
         "load" => Ok(
             json!({"options":s.options()?,"stats":s.stats()?,"projects":s.projects()?,"kinds":KINDS,"states":STATES}),
         ),
