@@ -352,3 +352,20 @@ fn directory_changed_after_proposal_and_invalid_search_are_refused() {
         )
         .is_err());
 }
+
+#[test]
+fn symlink_and_unapproved_reads_are_blocked() {
+    let f = Fixture::new();
+    fs::write(f.root.join("source.txt"), "synthetic").unwrap();
+    match std::os::windows::fs::symlink_file(f.root.join("source.txt"),f.root.join("symbolic.txt")) {
+        Ok(())=>{assert!(f.call("workspace_read",json!({"path":"symbolic.txt"})).is_err());fs::remove_file(f.root.join("symbolic.txt")).unwrap();},
+        Err(e) if e.raw_os_error()==Some(1314)=>eprintln!("Synthetic symlink creation unavailable without SeCreateSymbolicLinkPrivilege; junction test remains mandatory."),
+        Err(e)=>panic!("Synthetic symlink creation failed: {e}"),
+    }
+    let mut cfg = load(&f.c);
+    cfg.permissions.allow_read = false;
+    action(&f.c, "save", json!(cfg)).unwrap();
+    assert!(f
+        .call("workspace_read", json!({"path":"source.txt"}))
+        .is_err());
+}
