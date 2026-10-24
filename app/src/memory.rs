@@ -927,10 +927,13 @@ impl Store {
         self.consolidate_batch(20)
     }
     fn consolidate_batch(&mut self, limit: usize) -> Result<bool, String> {
+        self.consolidate_batch_mode(limit, false)
+    }
+    fn consolidate_batch_mode(&mut self, limit: usize, durable_only: bool) -> Result<bool, String> {
         self.db
             .execute_batch("SAVEPOINT consolidation_batch")
             .map_err(error)?;
-        let result = self.consolidate_inner(limit.clamp(1, 20));
+        let result = self.consolidate_inner(limit.clamp(1, 20), durable_only);
         if result.is_ok() {
             self.db
                 .execute_batch("RELEASE consolidation_batch")
@@ -943,7 +946,7 @@ impl Store {
         }
         result
     }
-    fn consolidate_inner(&mut self, limit: usize) -> Result<bool, String> {
+    fn consolidate_inner(&mut self, limit: usize, durable_only: bool) -> Result<bool, String> {
         let next:Option<(String,i64)>=self.db.query_row("SELECT m.conversation_id,coalesce(c.last_ordinal,-1) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' AND m.ordinal>coalesce(c.last_ordinal,-1) ORDER BY m.conversation_id,m.ordinal LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(error)?;
         let Some((id, after)) = next else {
             return Ok(false);
@@ -976,7 +979,10 @@ impl Store {
                     |r| r.get(0),
                 )
                 .map_err(error)?;
-            if !rejected && !private_for_memory(&text) {
+            if !rejected
+                && !private_for_memory(&text)
+                && (!durable_only || classify(&text).is_some())
+            {
                 filtered.push((ordinal, text));
             }
         }
@@ -1581,7 +1587,7 @@ fn run_consolidation(c: &Caminhos, automatic: bool) -> Result<Value, String> {
                     {
                         return Ok(false);
                     }
-                    s.consolidate_batch(if automatic { 5 } else { 20 })
+                    s.consolidate_batch_mode(if automatic { 5 } else { 20 }, automatic)
                 })? {
                     break;
                 }

@@ -957,3 +957,29 @@ fn interruption_pauses_automatic_consolidation() {
     AUTO_PAUSED.store(false, Ordering::SeqCst);
     STOP_CONSOLIDATION.store(false, Ordering::SeqCst);
 }
+
+#[test]
+fn automatic_consolidation_skips_casual_messages_but_advances_checkpoint() {
+    let mut s = Fixture::new();
+    s.record(
+        "one",
+        "Synthetic",
+        0,
+        "user",
+        "Hoje está calor e estou apenas conversando.",
+    )
+    .unwrap();
+    assert!(s.consolidate_batch_mode(5, true).unwrap());
+    assert!(!s.consolidate_batch_mode(5, true).unwrap());
+    assert!(s.list("", None, "", "").unwrap().is_empty());
+    s.record(
+        "one",
+        "Synthetic",
+        1,
+        "user",
+        "Meu objetivo é terminar o teste fictício.",
+    )
+    .unwrap();
+    assert!(s.consolidate_batch_mode(5, true).unwrap());
+    assert_eq!(s.list("", None, "goal", "candidate").unwrap().len(), 1);
+}
