@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,15 +17,6 @@ pub static STOP_CONSOLIDATION: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CHATS: AtomicUsize = AtomicUsize::new(0);
 static AUTO_PAUSED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_DIAGNOSTICS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
-struct Deferred {
-    path: PathBuf,
-    conversation: String,
-    title: String,
-    ordinal: usize,
-    role: String,
-    text: String,
-}
-static DEFERRED: Mutex<VecDeque<Deferred>> = Mutex::new(VecDeque::new());
 fn sanitize_code(code: &str) -> &str {
     match code {
         "record_skipped_private_or_oversized"
@@ -288,7 +279,7 @@ impl Store {
             .map(|d| json!(*d))
             .unwrap_or(json!({}));
         Ok(
-            json!({"format":"lucille-technical-v1","schema":VERSION,"counters":counters,"runtime":runtime,"auto_enabled":self.options()?.auto_consolidation,"auto_paused":AUTO_PAUSED.load(Ordering::SeqCst),"active_generations":ACTIVE_CHATS.load(Ordering::SeqCst),"deferred_messages":DEFERRED.lock().map(|q|q.len()).unwrap_or(0)}),
+            json!({"format":"lucille-technical-v1","schema":VERSION,"counters":counters,"runtime":runtime,"auto_enabled":self.options()?.auto_consolidation,"auto_paused":AUTO_PAUSED.load(Ordering::SeqCst),"active_generations":ACTIVE_CHATS.load(Ordering::SeqCst),"deferred_messages":std::fs::read_dir(self.path.parent().unwrap().join("pending-records")).map(|r|r.flatten().filter(|e|e.path().extension().is_some_and(|x|x=="json")).count()).unwrap_or(0)}),
         )
     }
     fn technical_export(&self) -> Result<PathBuf, String> {
@@ -1353,34 +1344,113 @@ pub fn record(
         note("record_skipped_private_or_oversized");
         return Ok(());
     }
-    let mut q = DEFERRED
-        .lock()
-        .map_err(|_| "Fila local de memória indisponível.")?;
-    if let Some(p) = q
-        .iter_mut()
-        .find(|p| p.path == path && p.conversation == conversation && p.ordinal == ordinal)
-    {
-        p.text = text.into();
-        note("record_deferred_duplicate");
-        return Ok(());
-    }
-    if q.len() >= 32 {
-        note("record_queue_full");
-        return Err(
-            "Fila de memória cheia; histórico JSON preservado. Tente novamente após a manutenção."
-                .into(),
-        );
-    }
-    q.push_back(Deferred {
-        path,
-        conversation: conversation.into(),
-        title: title.into(),
-        ordinal,
-        role: role.into(),
-        text: text.into(),
-    });
+    write_pending(&path, conversation, ordinal)?;
     note("record_deferred");
     Ok(())
+}
+fn pending_dir(path: &Path) -> Result<PathBuf, String> {
+    let parent = path.parent().ok_or("Pasta de memória inválida.")?;
+    let dir = parent.join("pending-records");
+    std::fs::create_dir_all(&dir).map_err(|_| "Não foi possível persistir retry da memória.")?;
+    if !dir
+        .canonicalize()
+        .map_err(|_| "Pasta de retry indisponível.")?
+        .starts_with(
+            parent
+                .canonicalize()
+                .map_err(|_| "Pasta privada indisponível.")?,
+        )
+    {
+        return Err("Pasta de retry fora da memória privada.".into());
+    }
+    Ok(dir)
+}
+fn write_pending(path: &Path, conversation: &str, ordinal: usize) -> Result<(), String> {
+    use std::io::Write;
+    if conversation.is_empty()
+        || conversation.len() > 100
+        || !conversation
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        || ordinal > 1000000
+    {
+        return Err("Referência de retry inválida.".into());
+    }
+    let file = pending_dir(path)?.join(format!("{conversation}-{ordinal}.json"));
+    // Only a pointer to the already saved JSON, never a second plaintext message copy.
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&file)
+    {
+        Ok(mut f) => {
+            let data = json!({"conversation":conversation,"ordinal":ordinal}).to_string();
+            f.write_all(data.as_bytes())
+                .map_err(|_| "Falha ao persistir retry.")?;
+            f.sync_all().map_err(|_| "Falha ao sincronizar retry.")?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err("Falha ao criar retry privado.".into()),
+    }
+    Ok(())
+}
+fn replay_pending(c: &Caminhos, s: &mut Store) -> Result<usize, String> {
+    let dir = pending_dir(&s.path)?;
+    let mut count = 0;
+    for entry in std::fs::read_dir(dir)
+        .map_err(|_| "Fila privada indisponível.")?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .take(4)
+    {
+        if ACTIVE_CHATS.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        let path = entry.path();
+        if path.is_symlink() || entry.metadata().map(|m| m.len() > 4096).unwrap_or(true) {
+            note("retry_invalid_reference");
+            continue;
+        }
+        let data: Value = match std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+        {
+            Some(v) => v,
+            None => {
+                note("retry_invalid_reference");
+                let _ = std::fs::rename(&path, path.with_extension("failed"));
+                continue;
+            }
+        };
+        let id = data["conversation"].as_str().unwrap_or("");
+        let ordinal = data["ordinal"].as_u64().unwrap_or(u64::MAX);
+        let original = if id.len() <= 100 && ordinal <= 1000000 {
+            crate::agente::abrir(c, id).ok()
+        } else {
+            None
+        };
+        let message = original
+            .as_ref()
+            .and_then(|v| v.mensagens.get(ordinal as usize));
+        if let (Some(session), Some(message)) = (original.as_ref(), message) {
+            s.record(
+                id,
+                &session.titulo,
+                ordinal as i64,
+                &message.papel,
+                &message.texto,
+            )?;
+            std::fs::remove_file(&path).map_err(|_| {
+                "Registro salvo; referência pendente será deduplicada na próxima tentativa."
+            })?;
+            note("record_deferred_flushed");
+            count += 1;
+        } else {
+            note("retry_source_missing");
+            let _ = std::fs::rename(&path, path.with_extension("failed"));
+        }
+    }
+    Ok(count)
 }
 
 pub fn retrieve(c: &Caminhos, query: &str, conversation: &str) -> Result<Option<Value>, String> {
@@ -1533,25 +1603,7 @@ pub fn idle_tick(c: &Caminhos) -> Result<(), String> {
             return Ok(());
         }
         let mut s = Store::open(&path)?;
-        let mut q = DEFERRED.lock().map_err(|_| "Fila local indisponível.")?;
-        for _ in 0..4 {
-            if ACTIVE_CHATS.load(Ordering::SeqCst) > 0 {
-                break;
-            }
-            let Some(index) = q.iter().position(|p| p.path == path) else {
-                break;
-            };
-            let p = &q[index];
-            s.record(
-                &p.conversation,
-                &p.title,
-                p.ordinal as i64,
-                &p.role,
-                &p.text,
-            )?;
-            q.remove(index);
-            note("record_deferred_flushed");
-        }
+        replay_pending(c, &mut s)?;
         let pending:i64=s.db.query_row("SELECT count(*) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' AND m.ordinal>coalesce(c.last_ordinal,-1)",[],|r|r.get(0)).map_err(error)?;
         if pending == 0 {
             return Ok(());

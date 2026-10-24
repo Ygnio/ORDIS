@@ -898,3 +898,51 @@ fn restored_snapshot_keeps_memory_id_high_water() {
         .unwrap();
     assert!(c > b && b > a);
 }
+
+#[test]
+fn durable_retry_replays_only_referenced_message_and_is_idempotent() {
+    let mut s = Fixture::new();
+    let c = Caminhos {
+        projeto: s.dir.clone(),
+        runtime: s.dir.join("runtime"),
+    };
+    std::fs::create_dir_all(c.runtime.join("agente/sessoes")).unwrap();
+    let session = json!({"id":"synthetic-retry","titulo":"Synthetic","criada":0,"atualizada":0,"mensagens":[{"papel":"user","texto":"Prefiro respostas sintéticas curtas."}]});
+    std::fs::write(
+        c.runtime.join("agente/sessoes/synthetic-retry.json"),
+        session.to_string(),
+    )
+    .unwrap();
+    write_pending(&s.path, "synthetic-retry", 0).unwrap();
+    // Directly replaying is the same startup path; no in-memory message queue is needed.
+    if ACTIVE_CHATS.load(Ordering::SeqCst) == 0 {
+        replay_pending(&c, &mut s).unwrap();
+        assert_eq!(s.list("", None, "preference", "").unwrap().len(), 1);
+        write_pending(&s.path, "synthetic-retry", 0).unwrap();
+        replay_pending(&c, &mut s).unwrap();
+        assert_eq!(s.list("", None, "preference", "").unwrap().len(), 1);
+    }
+    assert!(write_pending(&s.path, "../escape", 0).is_err());
+}
+#[test]
+fn migration_backup_failure_preserves_original_schema() {
+    let s = Fixture::new();
+    let dir = s.dir.join("blocked-backup");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("old.sqlite3");
+    {
+        let db = Connection::open(&path).unwrap();
+        for sql in MIGRATIONS.iter().take(3) {
+            db.execute_batch(sql).unwrap();
+        }
+        db.pragma_update(None, "user_version", 3).unwrap();
+    }
+    std::fs::write(dir.join("backups"), b"synthetic obstruction").unwrap();
+    assert!(Store::open(&path).is_err());
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+}
