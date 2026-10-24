@@ -62,6 +62,7 @@ jobs:
             $_ -match '(^|/)(runtime|target|node_modules|venv|\.venv|__pycache__)(/|$)' -or
             $_ -match '(^|/)(\.env($|\.)|AGENTS\.local\.md|api_tokens\.yml|token\.dpapi|llama-api-key\.dpapi)$' -or
             $_ -match '\.(gguf|exl3|safetensors|dpapi|sqlite|sqlite3|db|wal|shm|embedding|embeddings|pem|p12|pfx|key|log)$' -or
+            $_ -match '\.(sqlite3?|db)-(wal|shm|journal)$' -or
             $_ -match '(?i)(^|/)(private|dados-privados|lucille-local|memorias|memories|embeddings|backups)(/|$)'
           }
           if ($forbidden) {

@@ -443,3 +443,56 @@ fn project_update_rolls_back_if_index_write_fails() {
         .is_err());
     assert!(s.projects().unwrap().is_empty());
 }
+
+#[test]
+fn reopening_conversation_keeps_project_after_default_changes() {
+    let mut s = Fixture::new();
+    let a = s
+        .project_put(&Project {
+            name: "Synthetic A".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let b = s
+        .project_put(&Project {
+            name: "Synthetic B".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut o = s.options().unwrap();
+    o.project_id = Some(a);
+    s.save_options(&o).unwrap();
+    s.record(
+        "synthetic-a",
+        "Teste",
+        0,
+        "user",
+        "Prefiro respostas curtas",
+    )
+    .unwrap();
+    o.project_id = Some(b);
+    s.save_options(&o).unwrap();
+    s.record(
+        "synthetic-a",
+        "Teste",
+        1,
+        "user",
+        "Tarefa: validar compilação",
+    )
+    .unwrap();
+    let rows = s.list("validar", None, "task", "").unwrap();
+    assert_eq!(rows[0].project_id, Some(a));
+    let mut m = input("Computador sintético exclusivo A");
+    m.project_id = Some(a);
+    s.put(None, &m, "manual", None).unwrap();
+    let r = s
+        .retrieve("computador", "synthetic-a")
+        .unwrap()
+        .unwrap()
+        .to_string();
+    assert!(r.contains("exclusivo A"));
+    assert!(s
+        .retrieve("computador", "new-synthetic-b")
+        .unwrap()
+        .is_none());
+}
