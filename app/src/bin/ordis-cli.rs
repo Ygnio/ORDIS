@@ -23,6 +23,8 @@ mod memory;
 mod modelos;
 #[path = "../proxmox.rs"]
 mod proxmox;
+#[path = "../response_metrics.rs"]
+mod response_metrics;
 #[path = "../settings.rs"]
 mod settings;
 #[path = "../win.rs"]

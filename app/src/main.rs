@@ -9,6 +9,7 @@ mod imagens;
 mod memory;
 mod modelos;
 mod proxmox;
+mod response_metrics;
 mod settings;
 mod win;
 

@@ -22,6 +22,8 @@ const TOKENS_POR_IMAGEM: usize = 1_200;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Mensagem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metricas: Option<crate::response_metrics::GenerationMetrics>,
     /// "user", "assistant" ou "tool".
     pub papel: String,
     #[serde(default)]
@@ -309,6 +311,7 @@ struct Resposta {
     texto: String,
     raciocinio: String,
     chamadas: Vec<Chamada>,
+    metricas: crate::response_metrics::GenerationMetrics,
 }
 
 fn transmitir(
@@ -337,6 +340,7 @@ fn transmitir(
         texto: r.text,
         raciocinio: r.reasoning,
         chamadas: r.tool_calls,
+        metricas: r.metrics,
     })
 }
 
@@ -457,6 +461,7 @@ fn rodar(
         let chamadas = r.chamadas.clone();
         s.mensagens.push(Mensagem {
             papel: "assistant".into(),
+            metricas: Some(r.metricas),
             texto: r.texto,
             raciocinio: (!r.raciocinio.is_empty()).then_some(r.raciocinio),
             chamadas: chamadas.clone(),
@@ -528,4 +533,51 @@ fn garantir_inferencia(c: &Caminhos, saida: &dyn Saida) -> Result<(), String> {
     }
     saida.evento("status", json!({"texto": "Carregando o modelo..."}));
     controle::iniciar(c, &|m: &str| saida.evento("status", json!({"texto": m})))
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+    #[test]
+    fn response_metrics_persist_in_json_and_legacy_sessions_still_load() {
+        let root = std::env::temp_dir().join(format!(
+            "ordis-synthetic-metrics-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let c = Caminhos {
+            projeto: root.clone(),
+            runtime: root.join("runtime"),
+        };
+        let mut s = nova(&c).unwrap();
+        let mut metrics = crate::response_metrics::GenerationMetrics::default();
+        metrics.model = "Sintético".into();
+        metrics.completion_tokens = Some(118);
+        metrics.total_ms = 2200.0;
+        metrics.state = "completed".into();
+        s.mensagens.push(Mensagem {
+            papel: "assistant".into(),
+            texto: "Resposta sintética".into(),
+            metricas: Some(metrics.clone()),
+            ..Default::default()
+        });
+        salvar(&c, &s).unwrap();
+        assert_eq!(
+            abrir(&c, &s.id).unwrap().mensagens[0].metricas,
+            Some(metrics.clone())
+        );
+        metrics.state = "cancelled".into();
+        metrics.completion_tokens = None;
+        s.mensagens[0].metricas = Some(metrics.clone());
+        salvar(&c, &s).unwrap();
+        assert_eq!(
+            abrir(&c, &s.id).unwrap().mensagens[0].metricas,
+            Some(metrics)
+        );
+        let old: Mensagem =
+            serde_json::from_value(json!({"papel":"assistant","texto":"Legado sintético"}))
+                .unwrap();
+        assert!(old.metricas.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
