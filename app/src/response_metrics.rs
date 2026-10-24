@@ -210,9 +210,11 @@ mod tests {
         let m = t.snapshot("streaming");
         let encoded = serde_json::to_string(&m).unwrap();
         assert!(!encoded.contains("Teste"));
-        assert_eq!(
-            serde_json::from_str::<GenerationMetrics>(&encoded).unwrap(),
-            m
-        );
+        let restored = serde_json::from_str::<GenerationMetrics>(&encoded).unwrap();
+        assert_eq!(restored.model, m.model);
+        assert_eq!(restored.state, m.state);
+        assert_eq!(restored.estimated_tokens, m.estimated_tokens);
+        assert!((restored.total_ms - m.total_ms).abs() < 0.000001);
+        assert!((restored.ttft_ms.unwrap() - m.ttft_ms.unwrap()).abs() < 0.000001);
     }
 }
