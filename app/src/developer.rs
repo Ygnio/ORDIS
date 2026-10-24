@@ -98,6 +98,20 @@ fn validate(c: &Caminhos, v: Config) -> Result<Config, String> {
         let root = Path::new(&p.workspace)
             .canonicalize()
             .map_err(|_| "Selecione um workspace existente.")?;
+        let mut protected = vec![c.projeto.clone(), c.runtime.clone()];
+        if let Some(parent) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+        {
+            protected.push(parent);
+        }
+        if protected
+            .iter()
+            .filter_map(|p| p.canonicalize().ok())
+            .any(|p| root.starts_with(&p) || p.starts_with(&root))
+        {
+            return Err("Workspace deve ficar separado da instalação ativa, de seus prompts, configurações e runtime.".into());
+        }
         let home = std::env::var_os("USERPROFILE")
             .map(PathBuf::from)
             .and_then(|p| p.canonicalize().ok());

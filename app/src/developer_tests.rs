@@ -369,3 +369,15 @@ fn symlink_and_unapproved_reads_are_blocked() {
         .call("workspace_read", json!({"path":"source.txt"}))
         .is_err());
 }
+
+#[test]
+fn active_application_prompts_and_runtime_are_not_development_workspaces() {
+    let f = Fixture::new();
+    let mut cfg = load(&f.c);
+    let prompt = f.c.projeto.join("agente/workspace");
+    fs::create_dir_all(&prompt).unwrap();
+    cfg.permissions.workspace = prompt.to_string_lossy().into();
+    assert!(validate(&f.c, cfg.clone()).is_err());
+    cfg.permissions.workspace = f.c.runtime.to_string_lossy().into();
+    assert!(validate(&f.c, cfg).is_err());
+}
