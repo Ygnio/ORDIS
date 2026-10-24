@@ -48,10 +48,24 @@ impl Default for BackendSettings {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Capabilities {
+    /// Suportado pelo protocolo usado pelo cliente.
     pub streaming: bool,
-    /// O servidor implementa o protocolo; o modelo/template ainda pode não
-    /// produzir chamadas válidas.
+    /// Configuração ativa permite incluir ferramentas nas requisições; isso
+    /// não prova que o modelo/template produzirá chamadas válidas.
     pub tools: bool,
+    /// O protocolo do cliente aceita chamadas de ferramenta.
+    pub tools_protocol: bool,
+    /// `None` quando o servidor não anuncia suporte; `Some(false)` quando
+    /// anunciou explicitamente que não oferece a capacidade.
+    pub streaming_advertised: Option<bool>,
+    pub streaming_validated: Option<bool>,
+    pub tools_configured: Option<bool>,
+    pub tools_advertised: Option<bool>,
+    pub tools_validated: Option<bool>,
+    pub reasoning_configured: Option<bool>,
+    pub reasoning_validated: Option<bool>,
+    pub image_input_configured: Option<bool>,
+    pub image_input_advertised: Option<bool>,
     /// `None` significa que o servidor não anuncia essa capacidade.
     pub reasoning: Option<bool>,
     pub image_input: bool,
@@ -64,6 +78,9 @@ pub struct BackendStatus {
     pub connected: bool,
     pub endpoint: String,
     pub model: Option<String>,
+    pub context_tokens: Option<u64>,
+    pub response_max_tokens: Option<u32>,
+    pub externally_managed: bool,
     pub capabilities: Capabilities,
     pub error: Option<String>,
 }
@@ -131,7 +148,7 @@ fn llama_key(c: &Caminhos) -> Option<String> {
         .and_then(|v| crate::proxmox::decifrar(&v).ok())
 }
 
-fn normalize_base(s: &str) -> Result<String, String> {
+pub(crate) fn normalize_base(s: &str) -> Result<String, String> {
     let s = s.trim().trim_end_matches('/');
     let u =
         url::Url::parse(s).map_err(|_| "Informe uma URL válida para o servidor.".to_string())?;
@@ -187,7 +204,7 @@ async fn get_json(url: &str, key: Option<&str>, timeout: Duration) -> Result<Val
         .map_err(|e| format!("Resposta JSON inválida: {e}"))
 }
 
-fn model_data(v: &Value) -> Result<(String, bool), String> {
+fn model_data(v: &Value) -> Result<(String, Option<bool>), String> {
     let model = v["data"]
         .as_array()
         .and_then(|a| a.first())
@@ -198,14 +215,14 @@ fn model_data(v: &Value) -> Result<(String, bool), String> {
         .ok_or("O servidor devolveu um modelo sem identificador.")?;
     let image = model["architecture"]["input_modalities"]
         .as_array()
-        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("image")));
+        .map(|a| a.iter().any(|v| v.as_str() == Some("image")));
     Ok((id.to_string(), image))
 }
 
 pub async fn check_llama(url: &str, key: Option<&str>) -> Result<BackendStatus, String> {
     let base = normalize_base(url)?;
     let models = get_json(&format!("{base}/v1/models"), key, Duration::from_secs(8)).await?;
-    let (model, image_input) = model_data(&models)?;
+    let (model, image_input_advertised) = model_data(&models)?;
     let mut metrics_request = client(Duration::from_secs(2))?.get(format!("{base}/metrics"));
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         metrics_request = metrics_request.bearer_auth(k);
@@ -219,11 +236,24 @@ pub async fn check_llama(url: &str, key: Option<&str>) -> Result<BackendStatus, 
         connected: true,
         endpoint: base,
         model: Some(model),
+        context_tokens: None,
+        response_max_tokens: None,
+        externally_managed: true,
         capabilities: Capabilities {
             streaming: true,
             tools: true,
+            tools_protocol: true,
             reasoning: None,
-            image_input,
+            streaming_advertised: None,
+            streaming_validated: None,
+            tools_configured: None,
+            tools_advertised: None,
+            tools_validated: None,
+            reasoning_configured: None,
+            reasoning_validated: None,
+            image_input_configured: None,
+            image_input_advertised,
+            image_input: image_input_advertised.unwrap_or(false),
             metrics,
         },
         error: None,
@@ -256,15 +286,70 @@ pub fn check(c: &Caminhos) -> Result<BackendStatus, String> {
                 connected: true,
                 endpoint: base.to_string(),
                 model: Some(model),
+                context_tokens: Some(m.contexto),
+                response_max_tokens: Some(m.max_tokens),
+                externally_managed: !manages_tabby(c),
                 capabilities: Capabilities {
                     streaming: true,
                     tools: !m.ferramentas.is_empty(),
-                    reasoning: Some(m.raciocinio),
+                    tools_protocol: true,
+                    reasoning: None,
+                    streaming_advertised: None,
+                    streaming_validated: None,
+                    tools_configured: Some(!m.ferramentas.is_empty()),
+                    tools_advertised: None,
+                    tools_validated: None,
+                    reasoning_configured: Some(m.raciocinio),
+                    reasoning_validated: None,
+                    image_input_configured: Some(m.visao),
+                    image_input_advertised: None,
                     image_input: m.visao,
                     metrics: c.runtime.join("token-metrics.json").is_file(),
                 },
                 error: None,
             })
+        }
+    }
+}
+
+/// Retorna o estado do backend mesmo quando está desconectado, sem incluir
+/// detalhes de rede que possam conter dados privados devolvidos pelo servidor.
+pub fn status(c: &Caminhos) -> BackendStatus {
+    match check(c) {
+        Ok(status) => status,
+        Err(_) => {
+            let cfg = settings(c);
+            let (backend, endpoint, externally_managed) = match cfg.selected {
+                BackendKind::Tabbyapi => (BackendKind::Tabbyapi, cfg.tabby_url, !manages_tabby(c)),
+                BackendKind::LlamaCpp => (BackendKind::LlamaCpp, cfg.llama_url, true),
+            };
+            BackendStatus {
+                backend,
+                connected: false,
+                endpoint: normalize_base(&endpoint).unwrap_or_default(),
+                model: None,
+                context_tokens: None,
+                response_max_tokens: None,
+                externally_managed,
+                capabilities: Capabilities {
+                    streaming: true,
+                    tools: false,
+                    tools_protocol: true,
+                    reasoning: None,
+                    streaming_advertised: None,
+                    streaming_validated: None,
+                    tools_configured: None,
+                    tools_advertised: None,
+                    tools_validated: None,
+                    reasoning_configured: None,
+                    reasoning_validated: None,
+                    image_input_configured: None,
+                    image_input_advertised: None,
+                    image_input: false,
+                    metrics: false,
+                },
+                error: Some("Não foi possível consultar o backend configurado.".into()),
+            }
         }
     }
 }
@@ -318,7 +403,17 @@ pub fn active_capabilities(c: &Caminhos) -> Capabilities {
     check(c).map(|s| s.capabilities).unwrap_or(Capabilities {
         streaming: false,
         tools: false,
+        tools_protocol: false,
         reasoning: None,
+        streaming_advertised: None,
+        streaming_validated: None,
+        tools_configured: None,
+        tools_advertised: None,
+        tools_validated: None,
+        reasoning_configured: None,
+        reasoning_validated: None,
+        image_input_configured: None,
+        image_input_advertised: None,
         image_input: false,
         metrics: false,
     })
@@ -327,19 +422,26 @@ pub fn active_capabilities(c: &Caminhos) -> Capabilities {
 pub fn chat(
     c: &Caminhos,
     messages: &[Value],
-    max_tokens: u32,
+    max_tokens: Option<u32>,
     tools: &[Value],
     cancel: &AtomicBool,
     emit: &dyn Fn(&str, Value),
 ) -> Result<ChatResponse, String> {
     let (base, key) = active_endpoint(c);
     let model = selected_model(c)?;
-    let mut body =
-        json!({"model": model, "messages": messages, "stream": true, "max_tokens": max_tokens});
+    let mut body = request_body(&model, messages, max_tokens);
     if !tools.is_empty() && active_capabilities(c).tools {
         body["tools"] = json!(tools);
     }
     run_async(chat_async(base, key, body, cancel, emit))
+}
+
+fn request_body(model: &str, messages: &[Value], max_tokens: Option<u32>) -> Value {
+    let mut body = json!({"model": model, "messages": messages, "stream": true});
+    if let Some(max_tokens) = max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
+    body
 }
 
 #[derive(Default)]
@@ -550,12 +652,21 @@ mod tests {
     fn model_metadata_does_not_assume_image_support() {
         let (id, image) = model_data(&json!({"data":[{"id":"loaded"}]})).unwrap();
         assert_eq!(id, "loaded");
-        assert!(!image);
+        assert_eq!(image, None);
         let (_, image) = model_data(
             &json!({"data":[{"id":"vision","architecture":{"input_modalities":["text","image"]}}]}),
         )
         .unwrap();
-        assert!(image);
+        assert_eq!(image, Some(true));
+    }
+
+    #[test]
+    fn external_backend_request_does_not_inherit_tabby_response_limit() {
+        let messages = vec![json!({"role":"user","content":"hello"})];
+        let llama = request_body("Lucille", &messages, None);
+        let tabby = request_body("tabby-model", &messages, Some(4096));
+        assert!(llama.get("max_tokens").is_none());
+        assert_eq!(tabby["max_tokens"], 4096);
     }
 
     #[test]
@@ -593,6 +704,33 @@ mod tests {
         )
         .unwrap();
         assert!(!manages_tabby(&c));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn switching_backend_keeps_both_endpoint_configurations() {
+        let root = std::env::temp_dir().join(format!(
+            "ordis-backend-switch-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let c = Caminhos { projeto: root.clone(), runtime: root.clone() };
+        let llama = BackendSettings {
+            selected: BackendKind::LlamaCpp,
+            tabby_url: "http://127.0.0.1:5000".into(),
+            llama_url: "http://127.0.0.1:8080".into(),
+        };
+        save(&c, llama, None).unwrap();
+        let tabby = BackendSettings {
+            selected: BackendKind::Tabbyapi,
+            tabby_url: "http://127.0.0.1:5050".into(),
+            llama_url: "http://127.0.0.1:8090".into(),
+        };
+        save(&c, tabby, None).unwrap();
+        let stored = settings(&c);
+        assert_eq!(stored.selected, BackendKind::Tabbyapi);
+        assert_eq!(stored.tabby_url, "http://127.0.0.1:5050");
+        assert_eq!(stored.llama_url, "http://127.0.0.1:8090");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -646,9 +784,15 @@ mod tests {
         server.join().unwrap();
         assert_eq!(status.model.as_deref(), Some("gemma-gguf"));
         assert!(status.capabilities.image_input);
+        assert_eq!(status.capabilities.image_input_advertised, Some(true));
         assert!(status.capabilities.metrics);
         assert!(status.capabilities.tools);
+        assert_eq!(status.capabilities.tools_advertised, None);
+        assert_eq!(status.capabilities.tools_validated, None);
         assert_eq!(status.capabilities.reasoning, None);
+        assert_eq!(status.context_tokens, None);
+        assert_eq!(status.response_max_tokens, None);
+        assert!(status.externally_managed);
     }
 
     #[test]
@@ -673,6 +817,46 @@ mod tests {
     }
 
     #[test]
+    fn starting_external_llama_only_checks_connection_and_does_not_register_process() {
+        let root = std::env::temp_dir().join(format!(
+            "ordis-llama-process-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let c = Caminhos { projeto: root.clone(), runtime: root.clone() };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let path = request(&mut stream);
+                if path.starts_with("GET /v1/models ") {
+                    json_response(&mut stream, "200 OK", r#"{"data":[{"id":"Lucille"}]}"#);
+                } else {
+                    assert!(path.starts_with("GET /metrics "));
+                    json_response(&mut stream, "200 OK", "metrics");
+                }
+            }
+        });
+        save(
+            &c,
+            BackendSettings {
+                selected: BackendKind::LlamaCpp,
+                tabby_url: "http://127.0.0.1:5000".into(),
+                llama_url: format!("http://{address}"),
+            },
+            None,
+        )
+        .unwrap();
+
+        crate::controle::iniciar(&c, &|_| {}).unwrap();
+        assert!(!c.runtime.join("state.json").exists());
+        assert_eq!(check(&c).unwrap().model.as_deref(), Some("Lucille"));
+        server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn mock_server_streams_reasoning_text_and_tool_calls_across_chunks() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -682,7 +866,7 @@ mod tests {
             assert!(req.starts_with("POST /v1/chat/completions "));
             let events = [
                 r#"data: {"choices":[{"delta":{"reasoning_content":"think"}}]}"#,
-                r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#,
+                r#"data: {"choices":[{"delta":{"content":"<think>texto comum</think> hello"}}]}"#,
                 r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read","arguments":"{\"path\":"}}]}}]}"#,
                 r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"README.md\"}"}}]}}]}"#,
                 "data: [DONE]",
@@ -706,7 +890,7 @@ mod tests {
         ))
         .unwrap();
         server.join().unwrap();
-        assert_eq!(response.text, "hello");
+        assert_eq!(response.text, "<think>texto comum</think> hello");
         assert_eq!(response.reasoning, "think");
         assert_eq!(response.tool_calls[0].id, "call-1");
         assert_eq!(response.tool_calls[0].nome, "read");

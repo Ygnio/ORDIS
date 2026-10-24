@@ -1,8 +1,11 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+let backendAtual = null;
+const nomeBackend = () => backendAtual?.backend === 'llama_cpp' ? 'llama.cpp' : 'TabbyAPI';
+const nomeModeloAtivo = () => backendAtual?.model || 'Modelo desconhecido';
 const SERVICOS = {
-  inferencia: { titulo: 'Inferência', detalhe: () => `${nomes.conversa} · TabbyAPI` },
+  inferencia: { titulo: 'Inferência', detalhe: () => `${nomeModeloAtivo()} · ${nomeBackend()} · ${backendAtual?.connected ? 'conectado' : 'desconectado'}` },
   imagens: { titulo: 'Imagens', detalhe: () => `${nomes.imagem} · ComfyUI` },
 };
 const SITUACAO = { pronto: 'Pronto', iniciando: 'Iniciando…', desligado: 'Desligado' };
@@ -63,6 +66,7 @@ window.ordis = {
   },
   mostrarAba,
   nomes: () => nomes,
+  backendStatus: () => backendAtual,
   // Há troca de modelo quando este app gera uma imagem ou quando o ComfyUI
   // está ligado (geração iniciada pelo terminal, por exemplo).
   emTroca(p) {
@@ -207,9 +211,9 @@ function mostrarGlobal(p) {
   $('status-global').querySelector('.ponto').className = `ponto ${situacao}`;
   $('status-global').dataset.dica = troca
     ? inferencia.situacao === 'iniciando'
-      ? `${nomes.conversa} voltando para a GPU…`
-      : `${nomes.conversa} fora da GPU enquanto a imagem é gerada`
-    : `${nomes.conversa}: ${SITUACAO[inferencia.situacao].toLowerCase()}`;
+      ? `${nomeModeloAtivo()} voltando para a GPU…`
+      : `${nomeModeloAtivo()} fora da GPU enquanto a imagem é gerada`
+    : `${nomeModeloAtivo()} · ${nomeBackend()}: ${backendAtual?.connected ? 'conectado' : SITUACAO[inferencia.situacao].toLowerCase()}`;
   $('pop-linhas').replaceChildren(
     ...p.servicos.map((s) => {
       const l = el('div', 'linha-servico');
@@ -220,6 +224,15 @@ function mostrarGlobal(p) {
   const v = lerVram(p.vram);
   $('pop-vram').textContent = v ? `GPU: ${v.usado.toFixed(1)} de ${v.total.toFixed(1)} GB em uso` : 'GPU: memória indisponível';
 }
+
+window.addEventListener('backend-status', ({ detail }) => {
+  backendAtual = detail;
+  if (detail?.model) nomes = { ...nomes, conversa: detail.model };
+  if (ultimoPainel) {
+    $('servicos').replaceChildren(...ultimoPainel.servicos.map(cartaoServico));
+    mostrarGlobal(ultimoPainel);
+  }
+});
 
 async function atualizar() {
   try {

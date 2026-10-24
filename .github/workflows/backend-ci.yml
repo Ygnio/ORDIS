@@ -67,13 +67,19 @@ jobs:
             Write-Error "Private/generated files are tracked:`n$($forbidden -join "`n")"
           }
 
-      - name: Check formatting of new Rust module
+      - name: Check formatting of changed Rust backend module
         shell: pwsh
         run: rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --check app/src/backends.rs
 
       - name: Check JavaScript syntax
         shell: pwsh
-        run: node --check app/ui/modelos.js
+        run: |
+          node --check app/ui/modelos.js
+          node --check app/ui/agente.js
+          node --check app/ui/app.js
+          node --check app/ui/imagens.js
+          node --check app/ui/backend-status.js
+          node --test scripts/test-backend-ui.cjs
 
       - name: Run Python tests
         shell: pwsh
@@ -127,7 +133,7 @@ jobs:
       - name: Upload Windows test ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: ORDIS-Windows-Test
+          name: ORDIS-Windows-Test-Fase-1.6
           path: ${{ runner.temp }}/ORDIS-Windows-Test.zip
           if-no-files-found: error
           retention-days: 14

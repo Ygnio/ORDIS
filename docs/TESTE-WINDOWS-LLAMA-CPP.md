@@ -1,6 +1,6 @@
 # Teste manual: ORDIS e llama.cpp no Windows 10
 
-Este procedimento valida o pacote `ORDIS-Windows-Test.zip` com o servidor llama.cpp que já está instalado pelo usuário. O ORDIS é somente cliente HTTP do llama.cpp. Ele não inicia, para, reinicia, mata nem altera o servidor, o GGUF ou o contexto configurado.
+Este procedimento valida o pacote `ORDIS-Windows-Test.zip` do artifact **ORDIS-Windows-Test-Fase-1.6**, substituto do artifact de teste anterior. O pacote incorpora a identificação do modelo ativo e a separação das configurações do TabbyAPI. O ORDIS é somente cliente HTTP do llama.cpp. Ele não inicia, para, reinicia, mata nem altera o servidor, o GGUF ou o contexto configurado.
 
 ## O que vem no pacote
 
@@ -26,14 +26,19 @@ Faça as etapas com o servidor llama.cpp já iniciado pelo usuário e configurad
 1. Abra o ORDIS. Confirme que a janela aparece mesmo com TabbyAPI ausente e ComfyUI parado.
 2. Abra **Configurações > Modelos**, selecione llama.cpp e salve o endpoint `http://127.0.0.1:8080`.
 3. Use **Testar conexão**. Confirme que o modelo informado corresponde ao GGUF carregado no servidor.
+   Confirme que contexto e limite por resposta aparecem como desconhecidos quando o servidor não os anuncia. A ferramenta `session_status` deve informar `Lucille`, backend `llama.cpp`, conexão ativa e limites nulos, sem reaproveitar contexto ou opções do TabbyAPI.
+   Confirme que a tela de modelos oculta as opções TabbyAPI enquanto llama.cpp está selecionado e que, ao voltar ao TabbyAPI, os valores anteriores continuam salvos.
+   No rodapé do chat, confirme o formato `Lucille · llama.cpp · conectado`; pare o servidor manualmente para verificar que a interface mostre desconectado e volte a conectado após reiniciá-lo manualmente.
 4. Envie uma pergunta curta, sem informação privada. Confirme que o texto aparece em partes durante o streaming.
 5. Envie outra pergunta e use **Interromper**. Confirme que o ORDIS para de receber a resposta e que o servidor continua ativo.
 6. Se o modelo e o template suportarem ferramentas, peça uma consulta simples de ferramenta que não altere arquivos ou serviços. Registre se a chamada foi reconhecida e concluída.
 7. Se o servidor separar reasoning, confirme se a interface o apresenta separado. A ausência desse campo pode ser normal para o template usado.
+   Texto comum dentro de tags como `<think>` continua como texto da resposta. Só o campo SSE explícito `reasoning_content` deve aparecer no painel de raciocínio.
 8. Confirme que a sessão aparece no histórico e continua disponível após fechar e reabrir o ORDIS.
 9. Feche o ORDIS e confirme no gerenciador de tarefas que o processo do llama.cpp continua ativo. O ORDIS não deve encerrar esse processo.
 10. Com o llama.cpp ainda sob controle manual, teste a indicação de servidor indisponível e recupere a conexão depois. Não use a ação de desligar serviços do ORDIS para este teste.
 11. Se houver runtime ComfyUI previamente instalado e configurado no projeto real, valide a coexistência com uma operação curta iniciada pelo fluxo ComfyUI normal do ORDIS. Não execute teste de imagem durante a validação isolada do ZIP, que não inclui ComfyUI.
+    Com llama.cpp selecionado, o ORDIS deixa o servidor externo em execução durante a geração do ComfyUI. A VRAM do llama.cpp continua ocupada; ajuste ou pare o servidor manualmente se o ComfyUI não tiver memória suficiente. O ORDIS não altera os parâmetros do llama.cpp.
 
 Para testar com o runtime já existente (TabbyAPI/ComfyUI), defina `ORDIS_PROJECT` para a raiz do checkout ou instalação que contém `config/paths.json`. Isso usa os dados que já estão naquele projeto; não copie, mova ou apague arquivos para esta validação.
 
@@ -59,3 +64,5 @@ O ORDIS/Rust não embute llama.cpp e o código desta aplicação não exige AVX2
 ## Compatibilidade ainda pendente
 
 O CI compila em Windows Server 2022; ele não comprova funcionamento em Windows 10. A janela usa WebView2 e efeitos visuais acrylic que podem se apresentar de forma diferente no Windows 10. O GNU precisa de `WebView2Loader.dll` ao lado do executável; o runtime Evergreen do WebView2 deve estar instalado. Este pacote não inclui runtime Python/CUDA do TabbyAPI ou ComfyUI, nem servidor llama.cpp, GGUF ou drivers NVIDIA. A validação final requer o Windows 10 22H2 e o hardware descrito pelo usuário.
+
+Se o llama.cpp não informar contexto e limite de resposta, esses valores ficam desconhecidos. Nesse caso o ORDIS envia o histórico da conversa sem aplicar o corte baseado no contexto configurado para TabbyAPI e omite `max_tokens`; o próprio servidor pode rejeitar uma conversa que ultrapasse o contexto que configurou.

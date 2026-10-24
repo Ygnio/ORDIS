@@ -140,6 +140,11 @@
 
   function atualizarBackendVisibilidade() {
     const llama = $('backend-tipo').value === 'llama_cpp';
+    $('tabby-model-config').hidden = !window.ordisBackendStatus.tabbySettingsVisible($('backend-tipo').value);
+    $('llama-model-info').hidden = !llama;
+    if (llama && !$('llama-model-info').textContent.trim()) {
+      $('llama-model-info').textContent = 'As opções de modelo acima pertencem ao TabbyAPI. O llama.cpp é configurado no servidor externo; salve e teste para consultar modelo e capacidades.';
+    }
     $('backend-url').value = backendUrls[llama ? 'llama_cpp' : 'tabbyapi'];
     $('backend-url-label').textContent = llama ? 'Endereço do llama.cpp' : 'Endereço do TabbyAPI';
     $('backend-url').placeholder = llama ? 'http://127.0.0.1:8080' : 'http://127.0.0.1:5000';
@@ -151,17 +156,27 @@
 
   function mostrarBackend(s) {
     const caps = s.capabilities || {};
-    const raciocinio = caps.reasoning == null ? 'não anunciado' : caps.reasoning ? 'sim' : 'não';
+    const simNaoDesconhecido = window.ordisBackendStatus.knownOrUnknown;
+    const raciocinio = simNaoDesconhecido(caps.reasoning);
     const partes = [
+      s.error || '',
       s.connected ? 'Conectado' : 'Desconectado',
+      s.endpoint ? `endereço: ${s.endpoint}` : '',
       s.model ? `modelo: ${s.model}` : '',
-      `stream: ${caps.streaming ? 'sim' : 'não'}`,
-      `ferramentas: ${caps.tools ? 'API disponível (depende do template)' : 'não'}`,
-      `raciocínio separado: ${raciocinio}`,
-      `entrada de imagem: ${caps.image_input ? 'sim' : 'não'}`,
+      `contexto: ${s.context_tokens == null ? 'desconhecido' : `${s.context_tokens} tokens`}`,
+      `limite por resposta: ${s.response_max_tokens == null ? 'desconhecido' : `${s.response_max_tokens} tokens`}`,
+      `stream: protocolo ${caps.streaming ? 'disponível' : 'não disponível'}, anúncio ${simNaoDesconhecido(caps.streaming_advertised)}, validação ${simNaoDesconhecido(caps.streaming_validated)}`,
+      `ferramentas: protocolo ${caps.tools_protocol ? 'disponível' : 'não disponível'}, configuração ${simNaoDesconhecido(caps.tools_configured)}, anúncio ${simNaoDesconhecido(caps.tools_advertised)}, validação do modelo ${simNaoDesconhecido(caps.tools_validated)}`,
+      `raciocínio separado: configuração ${simNaoDesconhecido(caps.reasoning_configured)}, anúncio ${raciocinio}, validação ${simNaoDesconhecido(caps.reasoning_validated)}`,
+      `entrada de imagem: configuração ${simNaoDesconhecido(caps.image_input_configured)}, anúncio ${simNaoDesconhecido(caps.image_input_advertised)}`,
       `métricas: ${caps.metrics ? 'sim' : 'não'}`,
+      s.externally_managed ? 'servidor gerenciado externamente' : 'serviço gerenciado pelo ORDIS',
     ].filter(Boolean);
-    $('backend-status').textContent = s.error || partes.join(' · ');
+    $('backend-status').textContent = partes.join(' · ');
+    $('llama-model-info').textContent = s.connected
+      ? `llama.cpp externo · ${s.model || 'modelo desconhecido'} · conectado. Contexto: ${s.context_tokens == null ? 'desconhecido' : `${s.context_tokens} tokens`}; limite por resposta: ${s.response_max_tokens == null ? 'desconhecido' : `${s.response_max_tokens} tokens`}. ${caps.image_input_advertised == null ? 'Entrada de imagens não anunciada.' : caps.image_input_advertised ? 'Entrada de imagens anunciada.' : 'Entrada de imagens não anunciada.'}`
+      : `llama.cpp externo · desconectado. ${s.error || 'Modelo e capacidades indisponíveis.'}`;
+    window.dispatchEvent(new CustomEvent('backend-status', { detail: s }));
   }
 
   async function carregarBackend() {
@@ -171,7 +186,10 @@
     atualizarBackendVisibilidade();
     $('backend-key').value = '';
     try { mostrarBackend(await invoke('inference_backend_test')); }
-    catch (e) { $('backend-status').textContent = String(e); }
+    catch (e) {
+      $('backend-status').textContent = String(e);
+      window.dispatchEvent(new CustomEvent('backend-status', { detail: { connected: false, error: String(e), backend: $('backend-tipo').value } }));
+    }
   }
 
   async function testarBackend() {
@@ -349,6 +367,7 @@
   $('backend-tipo').addEventListener('change', () => {
     backendUrls[$('backend-tipo').value === 'llama_cpp' ? 'tabbyapi' : 'llama_cpp'] = $('backend-url').value;
     atualizarBackendVisibilidade();
+    $('backend-status').textContent = 'Salve o backend para testar a conexão e atualizar o modelo ativo.';
   });
   $('backend-salvar').addEventListener('click', salvarBackend);
   $('backend-testar').addEventListener('click', testarBackend);

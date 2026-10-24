@@ -216,6 +216,7 @@
           <div id="backend-status" class="sutil pequeno" role="status"></div>
         </div>
         <div class="cartao">
+          <div id="tabby-model-config">
           <div class="linha-config">
             <p class="rotulo">Conversa</p>
             <button class="fantasma pequeno" data-pasta="conversa"><svg><use href="#i-pasta"/></svg>Abrir pasta</button>
@@ -251,6 +252,8 @@
             <label class="chave"><input id="mc-mtp" type="checkbox"><span></span>MTP: gera ~65% mais rápido, usa ~1 GB a mais de VRAM</label>
             <label class="campo-mtp" for="mc-mtp-tokens">Tokens adiantados <input id="mc-mtp-tokens" type="number" min="1" max="8"></label>
           </div>
+          </div>
+          <div id="llama-model-info" class="sutil pequeno" role="status" hidden></div>
         </div>
 
         <div class="cartao">
@@ -354,6 +357,7 @@
   <div id="dica" class="dica" hidden></div>
 
   <script src="md.js"></script>
+  <script src="backend-status.js"></script>
   <script src="app.js"></script>
   <script src="agente.js"></script>
   <script src="imagens.js"></script>

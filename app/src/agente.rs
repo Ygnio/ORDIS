@@ -184,8 +184,9 @@ fn conteudo_usuario(texto: &str, imagens: &[String], enviar_imagens: bool) -> Va
 /// contexto estimado passar do orçamento. Só imagens do turno atual são enviadas.
 fn mensagens_api(c: &Caminhos, s: &Sessao) -> (Vec<Value>, usize) {
     let cfg = modelos::conversa(c);
+    let tabby = crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi;
     let capacidades = crate::backends::active_capabilities(c);
-    let orcamento = (cfg.contexto as usize).saturating_sub(cfg.max_tokens as usize + 1_500);
+    let orcamento = tabby.then(|| (cfg.contexto as usize).saturating_sub(cfg.max_tokens as usize + 1_500));
     let sistema = prompt_sistema(c);
     let custo = |m: &Mensagem| {
         (m.texto.len() + m.chamadas.iter().map(|ch| ch.argumentos.len() + 40).sum::<usize>())
@@ -201,7 +202,7 @@ fn mensagens_api(c: &Caminhos, s: &Sessao) -> (Vec<Value>, usize) {
         let total: usize = sistema.len() / CARACTERES_POR_TOKEN
             + s.mensagens[t..].iter().map(custo).sum::<usize>()
             + s.mensagens[ultimo_usuario..].iter().map(|m| m.imagens.len() * TOKENS_POR_IMAGEM).sum::<usize>();
-        if total <= orcamento {
+        if orcamento.map_or(true, |limite| total <= limite) {
             break;
         }
     }
@@ -221,7 +222,8 @@ fn mensagens_api(c: &Caminhos, s: &Sessao) -> (Vec<Value>, usize) {
                 if atual {
                     estimado += m.imagens.len() * TOKENS_POR_IMAGEM;
                 }
-                    saida.push(json!({"role": "user", "content": conteudo_usuario(&m.texto, &m.imagens, atual && cfg.visao && capacidades.image_input)}));
+                    let aceita_imagens = capacidades.image_input && (!tabby || cfg.visao);
+                    saida.push(json!({"role": "user", "content": conteudo_usuario(&m.texto, &m.imagens, atual && aceita_imagens)}));
             }
             "assistant" => {
                 let mut msg = json!({"role": "assistant", "content": m.texto});
@@ -237,7 +239,7 @@ fn mensagens_api(c: &Caminhos, s: &Sessao) -> (Vec<Value>, usize) {
             _ => {
                 saida.push(json!({"role": "tool", "tool_call_id": m.id_chamada, "content": m.texto}));
                 // Só `read` devolve imagens ao modelo; as geradas apenas aparecem na tela.
-                if atual && cfg.visao && m.ferramenta.as_deref() == Some("read") {
+                if atual && capacidades.image_input && (!tabby || cfg.visao) && m.ferramenta.as_deref() == Some("read") {
                     estimado += m.imagens.len() * TOKENS_POR_IMAGEM;
                     pendentes.extend(m.imagens.iter().cloned());
                 }
@@ -273,7 +275,8 @@ struct Resposta {
 
 fn transmitir(c: &Caminhos, mensagens: &[Value], cancelar: &AtomicBool, saida: &dyn Saida) -> Result<Resposta, String> {
     let cfg = modelos::conversa(c);
-    let r = crate::backends::chat(c, mensagens, cfg.max_tokens, &ferramentas::definicoes().as_array().cloned().unwrap_or_default(), cancelar, &|tipo, dados| {
+    let max_tokens = (crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi).then_some(cfg.max_tokens);
+    let r = crate::backends::chat(c, mensagens, max_tokens, &ferramentas::definicoes().as_array().cloned().unwrap_or_default(), cancelar, &|tipo, dados| {
         saida.evento(tipo, dados);
     })?;
     Ok(Resposta { texto: r.text, raciocinio: r.reasoning, chamadas: r.tool_calls })

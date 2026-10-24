@@ -33,7 +33,7 @@ pub fn definicoes() -> Value {
         }},
         {"type": "function", "function": {
             "name": "session_status",
-            "description": "Informa data e hora atuais, fuso, modelo, limite de contexto e o tamanho aproximado desta conversa.",
+            "description": "Informa data, fuso, backend, endpoint sem credenciais, modelo ativo, conexão e capacidades anunciadas/configuradas/validadas, limites conhecidos e tamanho aproximado da conversa. Limites desconhecidos são null e nunca são copiados de outro backend.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": false}
         }},
         {"type": "function", "function": {
@@ -203,17 +203,58 @@ pub fn agora_formatado() -> String {
 }
 
 fn status_sessao(ctx: &Contexto) -> String {
-    let cfg = crate::modelos::conversa(ctx.caminhos);
+    let configured = crate::backends::settings(ctx.caminhos);
+    let backend_name = match configured.selected {
+        crate::backends::BackendKind::Tabbyapi => "tabbyapi",
+        crate::backends::BackendKind::LlamaCpp => "llama.cpp",
+    };
+    let endpoint_configured = match configured.selected {
+        crate::backends::BackendKind::Tabbyapi => configured.tabby_url,
+        crate::backends::BackendKind::LlamaCpp => configured.llama_url,
+    };
+    // Valida e remove qualquer eventual informação de autenticação de um
+    // arquivo de configuração antigo antes de mostrar o endpoint à conversa.
+    let endpoint = crate::backends::normalize_base(&endpoint_configured).ok();
+    let status = Some(crate::backends::status(ctx.caminhos));
+    status_sessao_json(backend_name, endpoint.as_deref(), status.as_ref(), ctx.tokens_conversa)
+        .to_string()
+}
+
+fn status_sessao_json(
+    backend: &str,
+    endpoint: Option<&str>,
+    status: Option<&crate::backends::BackendStatus>,
+    tokens_conversa: usize,
+) -> Value {
+    let connected = status.is_some_and(|s| s.connected);
+    let capabilities = status.map(|s| &s.capabilities);
     json!({
         "data_hora": agora_formatado(),
         "fuso": "America/Sao_Paulo",
-        "modelo": cfg.modelo,
-        "visao": cfg.visao,
-        "contexto_tokens": cfg.contexto,
-        "resposta_max_tokens": cfg.max_tokens,
-        "conversa_tokens_aprox": ctx.tokens_conversa,
+        "backend": backend,
+        "endpoint": endpoint,
+        "modelo": status.filter(|s| s.connected).and_then(|s| s.model.as_deref()),
+        "conectado": connected,
+        "gerenciado_externamente": status.map(|s| s.externally_managed),
+        "capacidades": {
+            "streaming_protocolo": capabilities.map(|c| c.streaming),
+            "streaming_anunciado": capabilities.and_then(|c| c.streaming_advertised),
+            "streaming_validado": capabilities.and_then(|c| c.streaming_validated),
+            "ferramentas_protocolo": capabilities.map(|c| c.tools_protocol),
+            "ferramentas_configuradas": capabilities.and_then(|c| c.tools_configured),
+            "ferramentas_anunciadas": capabilities.and_then(|c| c.tools_advertised),
+            "ferramentas_validadas_modelo": capabilities.and_then(|c| c.tools_validated),
+            "raciocinio_separado_configurado": capabilities.and_then(|c| c.reasoning_configured),
+            "raciocinio_separado_anunciado": capabilities.and_then(|c| c.reasoning),
+            "raciocinio_separado_validado": capabilities.and_then(|c| c.reasoning_validated),
+            "entrada_imagem_configurada": capabilities.and_then(|c| c.image_input_configured),
+            "entrada_imagem_anunciada": capabilities.and_then(|c| c.image_input_advertised),
+            "metricas": capabilities.map(|c| c.metrics),
+        },
+        "contexto_tokens": status.filter(|s| s.connected).and_then(|s| s.context_tokens),
+        "resposta_max_tokens": status.filter(|s| s.connected).and_then(|s| s.response_max_tokens),
+        "conversa_tokens_aprox": tokens_conversa,
     })
-    .to_string()
 }
 
 fn ip_publico(ip: IpAddr) -> bool {
@@ -445,4 +486,75 @@ fn gerar_imagem(ctx: &Contexto, args: &Value) -> Resultado {
         res.texto.push_str("\nA imagem já está sendo exibida ao usuário.");
     }
     res
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use crate::backends::{BackendKind, BackendStatus, Capabilities};
+
+    fn status(backend: BackendKind, model: &str, context: Option<u64>) -> BackendStatus {
+        BackendStatus {
+            backend,
+            connected: true,
+            endpoint: "http://127.0.0.1:8080".into(),
+            model: Some(model.into()),
+            context_tokens: context,
+            response_max_tokens: context.map(|_| 4096),
+            externally_managed: backend == BackendKind::LlamaCpp,
+            capabilities: Capabilities {
+                streaming: true,
+                tools: true,
+                tools_protocol: true,
+                reasoning: None,
+                streaming_advertised: None,
+                streaming_validated: None,
+                tools_configured: None,
+                tools_advertised: None,
+                tools_validated: None,
+                reasoning_configured: None,
+                reasoning_validated: None,
+                image_input_configured: None,
+                image_input_advertised: None,
+                image_input: false,
+                metrics: false,
+            },
+            error: None,
+        }
+    }
+
+    #[test]
+    fn session_status_reports_effective_tabby_model_and_settings() {
+        let s = status(BackendKind::Tabbyapi, "Qwen3.8-27B-exl3-3.0bpw", Some(32_768));
+        let value = status_sessao_json("tabbyapi", Some("http://127.0.0.1:5000"), Some(&s), 120);
+        assert_eq!(value["modelo"], "Qwen3.8-27B-exl3-3.0bpw");
+        assert_eq!(value["contexto_tokens"], 32_768);
+        assert_eq!(value["resposta_max_tokens"], 4096);
+        assert_eq!(value["conectado"], true);
+        assert_eq!(value["gerenciado_externamente"], false);
+    }
+
+    #[test]
+    fn session_status_does_not_copy_tabby_limits_to_llama_cpp() {
+        let s = status(BackendKind::LlamaCpp, "Lucille", None);
+        let value = status_sessao_json("llama.cpp", Some("http://127.0.0.1:8080"), Some(&s), 120);
+        assert_eq!(value["backend"], "llama.cpp");
+        assert_eq!(value["modelo"], "Lucille");
+        assert_eq!(value["contexto_tokens"], Value::Null);
+        assert_eq!(value["resposta_max_tokens"], Value::Null);
+        assert_eq!(value["capacidades"]["raciocinio_separado_anunciado"], Value::Null);
+        assert_eq!(value["capacidades"]["ferramentas_validadas_modelo"], Value::Null);
+        assert_eq!(value["gerenciado_externamente"], true);
+    }
+
+    #[test]
+    fn session_status_without_connection_does_not_claim_a_model_or_limits() {
+        let mut s = status(BackendKind::LlamaCpp, "stale-model", Some(65_536));
+        s.connected = false;
+        let value = status_sessao_json("llama.cpp", Some("http://127.0.0.1:8080"), Some(&s), 0);
+        assert_eq!(value["conectado"], false);
+        assert_eq!(value["modelo"], Value::Null);
+        assert_eq!(value["contexto_tokens"], Value::Null);
+        assert_eq!(value["resposta_max_tokens"], Value::Null);
+    }
 }

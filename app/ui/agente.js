@@ -26,7 +26,10 @@
   let bloco = null; // resposta do assistente em construção
   let segmento = null; // { raciocinio, corpo, texto }
   let mensagemEstado = null; // { texto, erro } enquanto houver algo a dizer
-  let qwen = null; // situação da inferência no último painel
+  let qwen = null; // situação do serviço de inferência no painel
+  let backendStatus = null;
+  let backendStatusAt = 0;
+  let backendStatusRequest = null;
   let painel = null;
   let tokensAoVivo = null;
   const cacheImagens = new Map();
@@ -381,21 +384,31 @@
     }
     alvo.title = '';
     const troca = qwen !== 'pronto' && window.ordis.emTroca(painel);
-    const ponto = el('span', `ponto ${qwen === 'pronto' ? 'pronto' : qwen === 'iniciando' || troca ? 'iniciando' : ''}`);
-    const n = window.ordis.nomes().conversa;
-    const texto =
-      qwen === 'pronto'
-        ? `${n} pronto`
-        : troca
-          ? qwen === 'iniciando'
-            ? `${n} voltando para a GPU…`
-            : `${n} fora da GPU enquanto a imagem é gerada · volta sozinho`
-          : qwen === 'iniciando'
-            ? `${n} iniciando…`
-            : qwen
-              ? `${n} desligado · carrega ao enviar (~30 s)`
-              : '';
+    const iniciando = qwen === 'iniciando' || troca;
+    const conectado = backendStatus?.connected === true;
+    const ponto = el('span', `ponto ${conectado ? 'pronto' : iniciando ? 'iniciando' : ''}`);
+    const texto = window.ordisBackendStatus.footer(backendStatus, qwen, iniciando);
     alvo.replaceChildren(...(texto ? [ponto, texto] : []));
+  }
+
+  function atualizarBackendStatus(force = false) {
+    if (!force && Date.now() - backendStatusAt < 15_000) return;
+    if (backendStatusRequest) return backendStatusRequest;
+    backendStatusRequest = invoke('inference_backend_test')
+      .then((s) => {
+        backendStatus = s;
+        backendStatusAt = Date.now();
+        window.dispatchEvent(new CustomEvent('backend-status', { detail: s }));
+        desenharEstado();
+      })
+      .catch(() => {
+        backendStatus = { ...(backendStatus || {}), connected: false };
+        backendStatusAt = Date.now();
+        window.dispatchEvent(new CustomEvent('backend-status', { detail: backendStatus }));
+        desenharEstado();
+      })
+      .finally(() => { backendStatusRequest = null; });
+    return backendStatusRequest;
   }
 
   // ---------- Envio ----------
@@ -572,6 +585,13 @@
         ? `${t.tokens_per_second.toFixed(1)} tokens/s`
         : null;
     desenharEstado();
+    atualizarBackendStatus();
+  });
+  window.addEventListener('backend-status', ({ detail }) => {
+    backendStatus = detail;
+    backendStatusAt = Date.now();
+    window.dispatchEvent(new CustomEvent('backend-refresh', { detail }));
+    desenharEstado();
   });
 
   // ---------- Anexos ----------
@@ -730,6 +750,8 @@
   window.addEventListener('aba', (e) => {
     if (e.detail === 'agente') setTimeout(() => $('entrada').focus(), 0);
   });
+  setInterval(() => atualizarBackendStatus(), 15_000);
+  atualizarBackendStatus(true);
 
   try {
     if (localStorage.getItem(CHAVE_LATERAL)) alternarLateral(true);

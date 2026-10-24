@@ -272,7 +272,7 @@ fn inference_backend_save(
 #[tauri::command]
 async fn inference_backend_test(c: State<'_, Ctx>) -> Result<backends::BackendStatus, String> {
     let c = c.inner().clone();
-    em_segundo_plano(move || backends::check(&c.caminhos)).await
+    em_segundo_plano(move || Ok(backends::status(&c.caminhos))).await
 }
 
 /// Grava a configuração dos modelos. Se o modelo de conversa mudou e o Tabby

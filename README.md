@@ -25,7 +25,7 @@ Detalhes de cada aba e das ferramentas em [app/README.md](app/README.md) e [COMO
 
 O app funciona e é usado no dia a dia, mas **ainda não há instalador**: o ambiente de execução (`runtime/`, com Python, TabbyAPI, ComfyUI e os modelos) é montado à mão. Um assistente de primeiro uso está nos planos.
 
-Para a validação isolada do backend llama.cpp no Windows, baixe o artifact `ORDIS-Windows-Test` do workflow de CI e siga [docs/TESTE-WINDOWS-LLAMA-CPP.md](docs/TESTE-WINDOWS-LLAMA-CPP.md). O lançador usa `%LOCALAPPDATA%\Lucille\ORDIS-Teste`; runtimes de TabbyAPI/ComfyUI continuam externos. A mudança do runtime atual do projeto para `%LOCALAPPDATA%\Lucille\` não é automática e não move dados existentes.
+Para a validação isolada do backend llama.cpp no Windows, baixe o artifact mais recente `ORDIS-Windows-Test-Fase-1.6` do workflow de CI e siga [docs/TESTE-WINDOWS-LLAMA-CPP.md](docs/TESTE-WINDOWS-LLAMA-CPP.md). Ele substitui o artifact de teste anterior. O lançador usa `%LOCALAPPDATA%\Lucille\ORDIS-Teste`; runtimes de TabbyAPI/ComfyUI continuam externos. A mudança do runtime atual do projeto para `%LOCALAPPDATA%\Lucille\` não é automática e não move dados existentes.
 
 ### Montar o runtime
 
