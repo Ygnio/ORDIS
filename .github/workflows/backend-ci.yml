@@ -69,7 +69,7 @@ jobs:
 
       - name: Check formatting of new Rust module
         shell: pwsh
-        run: rustfmt --edition 2021 --check app/src/backends.rs
+        run: rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --check app/src/backends.rs
 
       - name: Check JavaScript syntax
         shell: pwsh
@@ -84,7 +84,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $log = Join-Path $env:RUNNER_TEMP 'cargo-test-gnu.log'
-          cargo test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          cargo +stable-x86_64-pc-windows-gnu test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Windows test binaries
@@ -92,7 +92,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $log = Join-Path $env:RUNNER_TEMP 'cargo-build-gnu-release.log'
-          cargo build --release --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          cargo +stable-x86_64-pc-windows-gnu build --release --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Assemble privacy-safe test ZIP
@@ -104,8 +104,9 @@ jobs:
           New-Item -ItemType Directory -Force $appOut, (Join-Path $appOut 'ui'), (Join-Path $stage 'config'), (Join-Path $stage 'scripts'), (Join-Path $stage 'agente/workspace'), (Join-Path $stage 'docs') | Out-Null
           Copy-Item app/target/release/ordis.exe (Join-Path $appOut 'ORDIS.exe')
           Copy-Item app/target/release/ordis-cli.exe (Join-Path $appOut 'ordis-cli.exe')
-          $loader = Get-ChildItem app/target -Recurse -File -Filter WebView2Loader.dll | Select-Object -First 1
-          if (-not $loader) { throw 'WebView2Loader.dll não foi encontrado na saída GNU do Tauri.' }
+          $loader = Get-Item app/target/release/WebView2Loader.dll -ErrorAction SilentlyContinue
+          if (-not $loader) { $loader = Get-ChildItem app/target -Recurse -File -Filter WebView2Loader.dll | Where-Object { $_.FullName -match '\\x64\\WebView2Loader\.dll$' } | Select-Object -First 1 }
+          if (-not $loader) { throw 'WebView2Loader.dll x64 não foi encontrado na saída GNU do Tauri.' }
           Write-Host "WebView2 loader: $($loader.FullName)"
           Copy-Item $loader.FullName $appOut
           Copy-Item app/ui/ordis.png (Join-Path $appOut 'ui/ordis.png')
