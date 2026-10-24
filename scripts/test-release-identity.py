@@ -119,6 +119,12 @@ def run(package, metrics=True):
                 stop.set(); sampler.join(timeout=5)
             memory_peaks.append(round(peak[0]/1024**2, 2))
 
+        def mem(action,args=None):
+            result=subprocess.run([str(exe),'memoria',action],input=json.dumps(args or {}),env=env,capture_output=True,text=True,encoding='utf-8',timeout=40)
+            assert result.returncode==0, 'Synthetic memory operation failed; no private output logged.'
+            return json.loads(result.stdout)
+        def memory_context():
+            return '\n'.join(str(m.get('content','')) for m in requests[-1]['messages'] if m.get('role')=='user' and str(m.get('content','')).startswith('<lucille_memory_data>'))
         select('llama_cpp')
         workspace = fixture / 'agente/workspace'
         workspace.mkdir(parents=True)
@@ -134,12 +140,12 @@ def run(package, metrics=True):
         db_path = fixture / 'runtime/memory/lucille.sqlite3'
         assert db_path.is_file()
         with closing(sqlite3.connect(db_path)) as db:
-            assert db.execute('pragma user_version').fetchone()[0] == 3
+            assert db.execute('pragma user_version').fetchone()[0] == 4
             assert db.execute('select state from memories').fetchone()[0] == 'candidate'
             assert db.execute("select count(*) from messages").fetchone()[0] == 2
-            db.execute("update memories set state='active'")  # Synthetic fixture approval.
-            db.execute("insert into identity_profile values(1,?,?,?,?,0)", ('Aurora Sintética', 'Descrição fictícia', 'Personalidade fictícia', 'Instrução fictícia permanente'))
-            db.commit()
+        candidate=mem('list',{'kind':'preference','state':'candidate'})[0]
+        mem('approve',{'id':candidate['id'],'replace':False})
+        mem('identity_save',{'name':'Aurora Sintética','description':'Descrição fictícia','personality':'Personalidade fictícia','instructions':'Instrução fictícia permanente'})
         ask('Bom dia.')
         assert 'Nome: Aurora Sintética' in requests[-1]['messages'][0]['content']
         assert 'Instrução fictícia permanente' in requests[-1]['messages'][0]['content']

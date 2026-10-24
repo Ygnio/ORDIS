@@ -59,7 +59,7 @@ fn creates_database_and_fts5() {
     let version: i64 =
         s.db.pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 }
 #[test]
 fn migrates_v1_transactionally() {
@@ -662,4 +662,239 @@ fn deletion_does_not_suppress_consolidation_in_another_project() {
     while s.consolidate_one().unwrap() {}
     assert_eq!(s.list("", Some(b), "preference", "").unwrap().len(), 1);
     assert!(s.list("", Some(a), "preference", "").unwrap().is_empty());
+}
+
+#[test]
+fn explicit_scenarios_are_candidates_and_speculation_is_not_a_fact() {
+    let mut s = Fixture::new();
+    let statements = [
+        "Lucille, o nome do meu projeto fictício é Girassol Azul.",
+        "Prefiro o editor Alfa.",
+        "Meu objetivo é terminar o projeto sintético.",
+        "Preciso concluir o teste fictício.",
+        "Instrução permanente autorizada: use exemplos curtos.",
+    ];
+    for (i, text) in statements.iter().enumerate() {
+        s.record("synthetic", "Teste", i as i64, "user", text)
+            .unwrap();
+    }
+    assert_eq!(s.list("", None, "", "candidate").unwrap().len(), 5);
+    assert!(s.retrieve("Girassol", "new").unwrap().is_none());
+    for text in [
+        "Talvez eu prefira o editor Beta.",
+        "Acho que meu projeto é Verde.",
+        "Hoje está calor e estou testando.",
+    ] {
+        assert!(classify(text).is_none());
+    }
+    s.record("assistant", "Teste", 0, "assistant", statements[0])
+        .unwrap();
+    assert_eq!(s.list("", None, "", "candidate").unwrap().len(), 5);
+}
+#[test]
+fn editor_update_requires_explicit_supersession_and_only_current_is_retrieved() {
+    let mut s = Fixture::new();
+    s.record("one", "Teste", 0, "user", "Prefiro o editor Alfa.")
+        .unwrap();
+    let old = s.list("Alfa", None, "", "").unwrap()[0].id;
+    s.approve(old, false).unwrap();
+    s.record(
+        "two",
+        "Teste",
+        0,
+        "user",
+        "Passei a preferir o editor Beta.",
+    )
+    .unwrap();
+    let new = s.list("Beta", None, "", "").unwrap()[0].id;
+    assert!(s.retrieve("Bom dia", "new").unwrap().is_none());
+    assert!(s.approve(new, false).is_err());
+    s.approve(new, true).unwrap();
+    let r = s.retrieve("Bom dia", "new").unwrap().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(r.contains("Beta"));
+    assert!(!r.contains("Alfa"));
+    assert_eq!(s.list("Alfa", None, "", "").unwrap()[0].state, "obsolete");
+    s.record("three", "Teste", 0, "user", "Prefiro o editor Alfa.")
+        .unwrap();
+    assert!(!s.retrieve("Bom dia", "new").unwrap().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("Alfa"));
+}
+#[test]
+fn technical_report_never_exports_content_names_paths_or_unknown_codes() {
+    let mut s = Fixture::new();
+    s.record(
+        "private-conversation-id",
+        "Private title",
+        0,
+        "user",
+        "Prefiro respostas do PrivateSentinel.",
+    )
+    .unwrap();
+    s.event("PRIVATE_SENTINEL_SECRET", 1, 0.0).unwrap();
+    let report = s.technical().unwrap().to_string();
+    for secret in [
+        "PrivateSentinel",
+        "private-conversation-id",
+        "Private title",
+        "PRIVATE_SENTINEL_SECRET",
+        "lucille.sqlite3",
+    ] {
+        assert!(!report.contains(secret));
+    }
+    assert!(report.contains("unknown_code"));
+}
+#[test]
+fn sensitive_statements_are_not_mirrored_or_extracted() {
+    let mut s = Fixture::new();
+    for (i, text) in [
+        "Lembre que meu CPF é 12345678901.",
+        "Prefiro receber em ficticio@example.invalid",
+        "Lembre que meu diagnóstico é fictício",
+    ]
+    .iter()
+    .enumerate()
+    {
+        s.record("private", "Teste", i as i64, "user", text)
+            .unwrap();
+    }
+    assert_eq!(
+        s.db.query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(s.list("", None, "", "").unwrap().is_empty());
+}
+#[test]
+fn recording_is_idempotent_and_no_durable_is_a_success_state() {
+    let mut s = Fixture::new();
+    s.record(
+        "one",
+        "Teste",
+        0,
+        "user",
+        "Hoje está calor e estou apenas conversando.",
+    )
+    .unwrap();
+    s.record(
+        "one",
+        "Teste",
+        0,
+        "user",
+        "Hoje está calor e estou apenas conversando.",
+    )
+    .unwrap();
+    assert_eq!(s.processing_states().unwrap()["no_durable_information"], 1);
+    assert_eq!(
+        s.db.query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(s
+        .technical()
+        .unwrap()
+        .to_string()
+        .contains("record_duplicate"));
+}
+#[test]
+fn consolidation_failure_rolls_back_all_candidates_and_checkpoint() {
+    let mut s = Fixture::new();
+    let mut o = s.options().unwrap();
+    o.extraction = false;
+    s.save_options(&o).unwrap();
+    s.record(
+        "one",
+        "Teste",
+        0,
+        "user",
+        "Prefiro respostas curtas sintéticas.",
+    )
+    .unwrap();
+    s.db.execute_batch("CREATE TRIGGER fail_summary BEFORE INSERT ON memories WHEN new.kind='summary' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
+    assert!(s.consolidate_batch(5).is_err());
+    assert!(s.list("", None, "", "").unwrap().is_empty());
+    assert_eq!(
+        s.db.query_row("SELECT count(*) FROM consolidation", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    s.db.execute_batch("DROP TRIGGER fail_summary").unwrap();
+    assert!(s.consolidate_batch(5).unwrap());
+    assert!(!s.consolidate_batch(5).unwrap());
+}
+#[test]
+fn migration_creates_valid_consistent_v3_backup_before_changes() {
+    let s = Fixture::new();
+    let path = s.dir.join("v3.sqlite3");
+    {
+        let db = Connection::open(&path).unwrap();
+        for sql in MIGRATIONS.iter().take(3) {
+            db.execute_batch(sql).unwrap();
+        }
+        db.execute("INSERT INTO schema_migrations VALUES(1,0),(2,0),(3,0)", [])
+            .unwrap();
+        db.pragma_update(None, "user_version", 3).unwrap();
+        db.execute(
+            "INSERT INTO identity_profile VALUES(1,'Aurora','Synthetic','Brief','Synthetic',0)",
+            [],
+        )
+        .unwrap();
+    }
+    let migrated = Store::open(&path).unwrap();
+    assert_eq!(migrated.profile().unwrap().unwrap().name, "Aurora");
+    assert!(!migrated.options().unwrap().auto_consolidation);
+    let backups: Vec<_> = std::fs::read_dir(migrated.backup_dir())
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("snapshot-premigration-v3-")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1);
+    validate_backup(&backups[0]).unwrap();
+    let backup = Connection::open(&backups[0]).unwrap();
+    assert_eq!(
+        backup
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+}
+#[test]
+fn active_generation_defers_idle_work_without_opening_any_database() {
+    let _guard = chat_started();
+    let c = Caminhos {
+        projeto: PathBuf::from("unused-synthetic"),
+        runtime: PathBuf::from("unused-synthetic"),
+    };
+    idle_tick(&c).unwrap();
+    assert_eq!(run_consolidation(&c, true).unwrap()["deferred"], true);
+}
+#[test]
+fn restored_snapshot_keeps_memory_id_high_water() {
+    let mut s = Fixture::new();
+    let a = s
+        .put(None, &input("Synthetic initial fact"), "manual", None)
+        .unwrap();
+    let backup = s.backup().unwrap();
+    let b = s
+        .put(None, &input("Synthetic later fact"), "manual", None)
+        .unwrap();
+    s.delete(b).unwrap();
+    let path = s.backup_path(&backup).unwrap();
+    let digest = validate_backup(&path).unwrap();
+    s.restore(&backup, true, &digest).unwrap();
+    let c = s
+        .put(None, &input("Synthetic current fact"), "manual", None)
+        .unwrap();
+    assert!(c > b && b > a);
 }
