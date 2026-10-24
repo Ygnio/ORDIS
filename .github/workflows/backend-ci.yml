@@ -156,6 +156,10 @@ jobs:
         shell: pwsh
         run: python scripts/test-release-reliability.py "${{ runner.temp }}/ORDIS-Windows-Test.zip"
 
+      - name: Validate developer tool cycle with synthetic backend
+        shell: pwsh
+        run: python scripts/test-release-developer.py "${{ runner.temp }}/ORDIS-Windows-Test.zip"
+
       - name: Upload Windows test ZIP
         uses: actions/upload-artifact@v4
         with:
