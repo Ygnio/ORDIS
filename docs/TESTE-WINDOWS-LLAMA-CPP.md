@@ -1,6 +1,6 @@
 # Teste manual: ORDIS e llama.cpp no Windows 10
 
-Este procedimento valida o pacote `ORDIS-Windows-Test.zip` do artifact **ORDIS-Windows-Test-Fase-1.6**, substituto do artifact de teste anterior. O pacote incorpora a identificação do modelo ativo e a separação das configurações do TabbyAPI. O ORDIS é somente cliente HTTP do llama.cpp. Ele não inicia, para, reinicia, mata nem altera o servidor, o GGUF ou o contexto configurado.
+Este procedimento valida o pacote `ORDIS-Windows-Test.zip` do artifact **ORDIS-Windows-Test-Fase-2**, substituto do pacote da Fase 1.6. Além da identificação do backend, inclui diagnóstico de hardware, consulta de `/props` e `/metrics`, configuração do ComfyUI e planejamento inativo do modo Desenvolvedor. Veja também [o inventário e o reteste específico da Fase 2](FASE-2-CONFIGURACOES.md). O ORDIS é somente cliente HTTP do llama.cpp. Ele não inicia, para, reinicia, mata nem altera o servidor, o GGUF ou o contexto configurado.
 
 ## O que vem no pacote
 

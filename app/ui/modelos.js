@@ -27,7 +27,9 @@
       opcao('', 'Nenhum (sem ferramentas)'),
       ...opcoes.ferramentas.map((f) => opcao(f, f)),
     );
-    $('mi-checkpoint').replaceChildren(...opcoes.checkpoints.map((m) => opcao(m.nome, `${m.nome} · ${gb(m.gb)}`)));
+    $('mi-checkpoint').replaceChildren(...(opcoes.checkpoints.length
+      ? opcoes.checkpoints.map((m) => opcao(m.nome, `${m.nome}${m.gb == null ? '' : ` · ${gb(m.gb)}`}`))
+      : [opcao('', opcoes.comfy?.checkpoints == null ? 'Modelos desconhecidos · consulte o serviço' : 'Nenhum checkpoint encontrado')]));
     $('mi-fluxo').replaceChildren(
       ...(opcoes.fluxos.length ? opcoes.fluxos.map((f) => opcao(f, f)) : [opcao('', 'Nenhum fluxo importado')]),
     );
@@ -57,6 +59,7 @@
     $('mc-mtp').checked = conversa.mtp;
     $('mc-mtp-tokens').value = conversa.mtp_tokens;
     escolher($('mi-checkpoint'), imagem.checkpoint, `${imagem.checkpoint} · não encontrado`);
+    for (const o of $('mi-checkpoint').options) o.disabled = !opcoes.checkpoints.some((m) => m.nome === o.value);
     if (imagem.fluxo) escolher($('mi-fluxo'), imagem.fluxo, imagem.fluxo);
     $('mi-passos').value = imagem.passos;
     $('mi-cfg').value = imagem.cfg;
@@ -109,7 +112,9 @@
 
     const ck = opcoes.checkpoints.find((m) => m.nome === f.imagem.checkpoint);
     let avisoImg = '';
-    if (!f.imagem.fluxo && !ck) avisoImg = 'Arquivo não encontrado em runtime\\ComfyUI\\models\\checkpoints.';
+    if (!f.imagem.fluxo && !ck) avisoImg = opcoes.comfy?.checkpoints == null
+      ? 'Não foi possível consultar os checkpoints. Confira a conexão com o ComfyUI.'
+      : 'Nenhum checkpoint selecionado foi encontrado. Instale um modelo manualmente ou escolha um fluxo importado.';
     else if (!f.imagem.fluxo && vram && ck.gb > vram - 1)
       avisoImg = `Com ${gb(ck.gb)}, este modelo provavelmente não cabe nos ${gb(vram)} da GPU.`;
     $('mi-aviso').textContent = avisoImg;
@@ -121,7 +126,7 @@
     $('mo-padrao').disabled = ocupado || padrao;
     $('mc-mtp-tokens').disabled = ocupado || !f.conversa.mtp;
     for (const id of ['mo-testar-conversa', 'mo-testar-imagem']) {
-      $(id).disabled = ocupado || alterado;
+      $(id).disabled = ocupado || alterado || (id === 'mo-testar-imagem' && !f.imagem.fluxo && !ck);
       $(id).dataset.dica = alterado ? 'Salve antes de testar' : '';
       if (!alterado) delete $(id).dataset.dica;
     }
@@ -135,6 +140,7 @@
     if (atual) preencherFormulario(atual.conversa, atual.imagem);
     else preencherFormulario(opcoes.conversa, opcoes.imagem);
   }
+  window.addEventListener('comfy-settings-saved', () => carregar(false).catch((err) => avisar(String(err), true)));
 
   let backendUrls = { tabbyapi: 'http://127.0.0.1:5000', llama_cpp: 'http://127.0.0.1:8080' };
 
@@ -155,27 +161,20 @@
   }
 
   function mostrarBackend(s) {
-    const caps = s.capabilities || {};
-    const simNaoDesconhecido = window.ordisBackendStatus.knownOrUnknown;
-    const raciocinio = simNaoDesconhecido(caps.reasoning);
-    const partes = [
-      s.error || '',
-      s.connected ? 'Conectado' : 'Desconectado',
-      s.endpoint ? `endereço: ${s.endpoint}` : '',
-      s.model ? `modelo: ${s.model}` : '',
-      `contexto: ${s.context_tokens == null ? 'desconhecido' : `${s.context_tokens} tokens`}`,
-      `limite por resposta: ${s.response_max_tokens == null ? 'desconhecido' : `${s.response_max_tokens} tokens`}`,
-      `stream: protocolo ${caps.streaming ? 'disponível' : 'não disponível'}, anúncio ${simNaoDesconhecido(caps.streaming_advertised)}, validação ${simNaoDesconhecido(caps.streaming_validated)}`,
-      `ferramentas: protocolo ${caps.tools_protocol ? 'disponível' : 'não disponível'}, configuração ${simNaoDesconhecido(caps.tools_configured)}, anúncio ${simNaoDesconhecido(caps.tools_advertised)}, validação do modelo ${simNaoDesconhecido(caps.tools_validated)}`,
-      `raciocínio separado: configuração ${simNaoDesconhecido(caps.reasoning_configured)}, anúncio ${raciocinio}, validação ${simNaoDesconhecido(caps.reasoning_validated)}`,
-      `entrada de imagem: configuração ${simNaoDesconhecido(caps.image_input_configured)}, anúncio ${simNaoDesconhecido(caps.image_input_advertised)}`,
-      `métricas: ${caps.metrics ? 'sim' : 'não'}`,
-      s.externally_managed ? 'servidor gerenciado externamente' : 'serviço gerenciado pelo ORDIS',
-    ].filter(Boolean);
-    $('backend-status').textContent = partes.join(' · ');
-    $('llama-model-info').textContent = s.connected
-      ? `llama.cpp externo · ${s.model || 'modelo desconhecido'} · conectado. Contexto: ${s.context_tokens == null ? 'desconhecido' : `${s.context_tokens} tokens`}; limite por resposta: ${s.response_max_tokens == null ? 'desconhecido' : `${s.response_max_tokens} tokens`}. ${caps.image_input_advertised == null ? 'Entrada de imagens não anunciada.' : caps.image_input_advertised ? 'Entrada de imagens anunciada.' : 'Entrada de imagens não anunciada.'}`
-      : `llama.cpp externo · desconectado. ${s.error || 'Modelo e capacidades indisponíveis.'}`;
+    $('backend-status').replaceChildren(...window.ordisBackendStatus.inferenceRows(s).map(([title, value]) => {
+      const card = el('div', 'capability-item');
+      const list = el('dl');
+      list.append(el('dt', '', title), el('dd', '', value));
+      card.append(list);
+      return card;
+    }));
+    $('llama-model-info').textContent = 'O modelo GGUF, o contexto, o KV cache e Flash Attention são controlados pelo servidor externo. A referência desejada é 65.536 tokens, Q8_0 e 20 tokens/s; estes valores não são aplicados nem presumidos pelo ORDIS.';
+    if (s.backend === 'tabbyapi' && s.externally_managed) {
+      $('tabby-model-config').hidden = true;
+      $('llama-model-info').hidden = false;
+      $('llama-model-info').textContent = 'TabbyAPI externo: o ORDIS consulta o modelo carregado; as configurações da instalação TabbyAPI local continuam preservadas.';
+    }
+    if (s.backend === 'tabbyapi') $('backend-nota').textContent = s.externally_managed ? 'TabbyAPI externo: o ORDIS apenas consulta este endereço.' : 'TabbyAPI local: o ORDIS gerencia a instalação configurada na porta 5000.';
     window.dispatchEvent(new CustomEvent('backend-status', { detail: s }));
   }
 
@@ -207,7 +206,7 @@
     try {
       backendUrls[$('backend-tipo').value] = $('backend-url').value;
       await invoke('inference_backend_save', {
-        settings: { selected: $('backend-tipo').value, ...backendUrls },
+        settings: window.ordisBackendStatus.backendSettings($('backend-tipo').value, backendUrls),
         apiKey: $('backend-key').value || null,
       });
       $('backend-key').value = '';
@@ -291,7 +290,7 @@
   }
 
   async function testarImagem() {
-    definirOcupado(true, 'Gerando uma imagem de teste (troca de modelos na GPU, leva 1 a 2 minutos)…');
+    definirOcupado(true, 'Gerando uma imagem de teste no ComfyUI configurado…');
     window.ordis.definirTroca(true);
     const inicio = Date.now();
     try {

@@ -719,3 +719,14 @@ select option { background: var(--solido); color: var(--texto); }
 .resultado-teste .etapa .detalhe { color: var(--sutil); flex: 1; }
 .resultado-teste .etapa .tempo { color: var(--fraco); font-size: 12px; }
 .resultado-teste img { max-width: 220px; border-radius: 8px; cursor: zoom-in; margin-top: 4px; }
+
+.capability-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(235px, 1fr)); gap: 10px; margin-top: 14px; }
+.capability-item { padding: 12px; border: 1px solid var(--borda); border-radius: 10px; overflow-wrap: anywhere; }
+.capability-item dt { color: var(--sutil); font-size: 12px; margin-bottom: 6px; }
+.capability-item dd { margin: 0; white-space: pre-line; font-size: 13px; }
+.capability-item dl { margin: 0; }
+.policy-list { font-size: 13px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+.policy-list dt { color: var(--sutil); }
+.policy-list dd { margin: 0; }
+#dev-repositories { width: 100%; resize: vertical; }
+@media (max-width: 700px) { .policy-list { grid-template-columns: 1fr; } }

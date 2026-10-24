@@ -3,6 +3,7 @@
 //! O cliente llama.cpp é deliberadamente externo: este módulo não cria nem
 //! registra processos, apenas faz requisições HTTP ao endpoint configurado.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,7 +83,95 @@ pub struct BackendStatus {
     pub response_max_tokens: Option<u32>,
     pub externally_managed: bool,
     pub capabilities: Capabilities,
+    pub details: ServerDetails,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ServerDetails {
+    pub props_available: bool,
+    pub context_source: Option<String>,
+    pub response_limit_source: Option<String>,
+    pub sleeping: Option<bool>,
+    pub flash_attention: Option<bool>,
+    pub cache_type_k: Option<String>,
+    pub cache_type_v: Option<String>,
+    pub metrics: BTreeMap<String, f64>,
+}
+
+fn apply_props(status: &mut BackendStatus, props: &Value) {
+    status.details.props_available = props.is_object();
+    let defaults = &props["default_generation_settings"];
+    status.context_tokens = defaults["n_ctx"].as_u64().filter(|n| *n > 0);
+    if status.context_tokens.is_some() {
+        status.details.context_source = Some("/props · n_ctx por slot".into());
+    }
+    let params = if defaults["params"].is_object() {
+        &defaults["params"]
+    } else {
+        defaults
+    };
+    status.response_max_tokens = params["n_predict"]
+        .as_u64()
+        .or_else(|| params["max_tokens"].as_u64())
+        .filter(|n| *n > 0 && *n <= u32::MAX as u64)
+        .map(|n| n as u32);
+    if status.response_max_tokens.is_some() {
+        status.details.response_limit_source =
+            Some("/props · limite padrão anunciado, não garantia por requisição".into());
+    }
+    status.details.sleeping = props["is_sleeping"].as_bool();
+    status.details.flash_attention = defaults["flash_attn"].as_bool();
+    let cache = |key: &str| {
+        defaults[key]
+            .as_str()
+            .filter(|v| {
+                [
+                    "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+                ]
+                .contains(v)
+            })
+            .map(str::to_string)
+    };
+    status.details.cache_type_k = cache("cache_type_k");
+    status.details.cache_type_v = cache("cache_type_v");
+    let caps = &mut status.capabilities;
+    caps.tools_advertised = props["chat_template_caps"]["supports_tool_calls"].as_bool();
+    caps.tools = caps.tools_advertised != Some(false);
+    caps.streaming_advertised = params["stream"].as_bool();
+    // Preservar reasoning no template não prova a existência de um canal separado.
+    caps.image_input_advertised = props["modalities"]["vision"]
+        .as_bool()
+        .or(caps.image_input_advertised);
+    caps.image_input = caps.image_input_advertised.unwrap_or(false);
+}
+
+fn parse_metrics(text: &str) -> BTreeMap<String, f64> {
+    let mut result = BTreeMap::new();
+    for line in text.lines().filter(|line| !line.starts_with('#')) {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else {
+            continue;
+        };
+        if ![
+            "llamacpp:predicted_tokens_seconds",
+            "llamacpp:prompt_tokens_seconds",
+            "llamacpp:requests_processing",
+            "llamacpp:requests_deferred",
+        ]
+        .contains(&name)
+        {
+            continue;
+        }
+        if let Some(value) = parts
+            .next()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+        {
+            result.insert(name.to_string(), value);
+        }
+    }
+    result
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -183,7 +272,7 @@ async fn get_json(url: &str, key: Option<&str>, timeout: Duration) -> Result<Val
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(k);
     }
-    let r = req.send().await.map_err(|e| {
+    let mut r = req.send().await.map_err(|e| {
         if e.is_timeout() {
             format!("Tempo limite ao conectar ao servidor: {e}")
         } else {
@@ -192,16 +281,20 @@ async fn get_json(url: &str, key: Option<&str>, timeout: Duration) -> Result<Val
     })?;
     let status = r.status();
     if !status.is_success() {
-        let body = r.text().await.unwrap_or_default();
-        return Err(format!(
-            "Servidor respondeu HTTP {}: {}",
-            status.as_u16(),
-            body.chars().take(300).collect::<String>()
-        ));
+        return Err(format!("Servidor respondeu HTTP {}.", status.as_u16()));
     }
-    r.json()
+    let mut bytes = Vec::new();
+    while let Some(chunk) = r
+        .chunk()
         .await
-        .map_err(|e| format!("Resposta JSON inválida: {e}"))
+        .map_err(|_| "Resposta incompleta do servidor.".to_string())?
+    {
+        if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
+            return Err("Resposta de diagnóstico excede o limite.".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Resposta JSON inválida.".to_string())
 }
 
 fn model_data(v: &Value) -> Result<(String, Option<bool>), String> {
@@ -219,23 +312,40 @@ fn model_data(v: &Value) -> Result<(String, Option<bool>), String> {
     Ok((id.to_string(), image))
 }
 
+fn public_model_id(id: &str) -> Option<String> {
+    (!id.starts_with('/') && !id.contains(['\\', ':', '\n', '\r', '\0']) && id.len() <= 512)
+        .then(|| id.to_string())
+}
+
 pub async fn check_llama(url: &str, key: Option<&str>) -> Result<BackendStatus, String> {
     let base = normalize_base(url)?;
     let models = get_json(&format!("{base}/v1/models"), key, Duration::from_secs(8)).await?;
     let (model, image_input_advertised) = model_data(&models)?;
+    let props = get_json(&format!("{base}/props"), key, Duration::from_secs(2))
+        .await
+        .ok();
     let mut metrics_request = client(Duration::from_secs(2))?.get(format!("{base}/metrics"));
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         metrics_request = metrics_request.bearer_auth(k);
     }
-    let metrics = metrics_request
-        .send()
-        .await
-        .is_ok_and(|r| r.status().is_success());
-    Ok(BackendStatus {
+    let (metrics, measurements) = match metrics_request.send().await {
+        Ok(mut response) if response.status().is_success() => {
+            let mut bytes = Vec::new();
+            while let Ok(Some(chunk)) = response.chunk().await {
+                if bytes.len() + chunk.len() > 256 * 1024 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            (true, parse_metrics(&String::from_utf8_lossy(&bytes)))
+        }
+        _ => (false, BTreeMap::new()),
+    };
+    let mut status = BackendStatus {
         backend: BackendKind::LlamaCpp,
         connected: true,
         endpoint: base,
-        model: Some(model),
+        model: public_model_id(&model),
         context_tokens: None,
         response_max_tokens: None,
         externally_managed: true,
@@ -256,8 +366,16 @@ pub async fn check_llama(url: &str, key: Option<&str>) -> Result<BackendStatus, 
             image_input: image_input_advertised.unwrap_or(false),
             metrics,
         },
+        details: ServerDetails {
+            metrics: measurements,
+            ..ServerDetails::default()
+        },
         error: None,
-    })
+    };
+    if let Some(props) = props {
+        apply_props(&mut status, &props);
+    }
+    Ok(status)
 }
 
 async fn check_tabby(url: &str, key: &str) -> Result<String, String> {
@@ -285,10 +403,15 @@ pub fn check(c: &Caminhos) -> Result<BackendStatus, String> {
                 backend: BackendKind::Tabbyapi,
                 connected: true,
                 endpoint: base.to_string(),
-                model: Some(model),
-                context_tokens: Some(m.contexto),
+                model: public_model_id(&model),
+                context_tokens: manages_tabby(c).then_some(m.contexto),
                 response_max_tokens: Some(m.max_tokens),
                 externally_managed: !manages_tabby(c),
+                details: ServerDetails {
+                    context_source: Some("Configuração TabbyAPI".into()),
+                    response_limit_source: Some("Configuração ORDIS/TabbyAPI".into()),
+                    ..ServerDetails::default()
+                },
                 capabilities: Capabilities {
                     streaming: true,
                     tools: !m.ferramentas.is_empty(),
@@ -317,7 +440,7 @@ pub fn check(c: &Caminhos) -> Result<BackendStatus, String> {
 pub fn status(c: &Caminhos) -> BackendStatus {
     match check(c) {
         Ok(status) => status,
-        Err(_) => {
+        Err(error) => {
             let cfg = settings(c);
             let (backend, endpoint, externally_managed) = match cfg.selected {
                 BackendKind::Tabbyapi => (BackendKind::Tabbyapi, cfg.tabby_url, !manages_tabby(c)),
@@ -331,6 +454,7 @@ pub fn status(c: &Caminhos) -> BackendStatus {
                 context_tokens: None,
                 response_max_tokens: None,
                 externally_managed,
+                details: ServerDetails::default(),
                 capabilities: Capabilities {
                     streaming: true,
                     tools: false,
@@ -348,7 +472,13 @@ pub fn status(c: &Caminhos) -> BackendStatus {
                     image_input: false,
                     metrics: false,
                 },
-                error: Some("Não foi possível consultar o backend configurado.".into()),
+                error: Some(if error.starts_with("Servidor respondeu HTTP ") {
+                    error
+                } else if error.contains("Tempo limite") {
+                    "Tempo limite ao consultar o backend.".into()
+                } else {
+                    "Não foi possível consultar o backend configurado.".into()
+                }),
             }
         }
     }
@@ -386,7 +516,8 @@ pub fn active_endpoint(c: &Caminhos) -> (String, Option<String>) {
 
 pub fn selected_model(c: &Caminhos) -> Result<String, String> {
     match active_kind(c) {
-        BackendKind::Tabbyapi => Ok(crate::modelos::conversa(c).modelo),
+        BackendKind::Tabbyapi if manages_tabby(c) => Ok(crate::modelos::conversa(c).modelo),
+        BackendKind::Tabbyapi => available_model(c),
         BackendKind::LlamaCpp => {
             let (base, key) = active_endpoint(c);
             let v = run_async(get_json(
@@ -397,6 +528,17 @@ pub fn selected_model(c: &Caminhos) -> Result<String, String> {
             Ok(model_data(&v)?.0)
         }
     }
+}
+
+/// Sondagem leve do painel: não consulta props/métricas a cada atualização.
+pub fn available_model(c: &Caminhos) -> Result<String, String> {
+    let (endpoint, key) = active_endpoint(c);
+    let value = run_async(get_json(
+        &format!("{}/v1/models", endpoint.trim_end_matches('/')),
+        key.as_deref(),
+        Duration::from_secs(3),
+    ))?;
+    model_data(&value).map(|(model, _)| model)
 }
 
 pub fn active_capabilities(c: &Caminhos) -> Capabilities {
@@ -650,6 +792,9 @@ mod tests {
 
     #[test]
     fn model_metadata_does_not_assume_image_support() {
+        assert_eq!(public_model_id("C:\\SyntheticPrivate\\model.gguf"), None);
+        assert_eq!(public_model_id("/synthetic-private/model.gguf"), None);
+        assert_eq!(public_model_id("Lucille"), Some("Lucille".into()));
         let (id, image) = model_data(&json!({"data":[{"id":"loaded"}]})).unwrap();
         assert_eq!(id, "loaded");
         assert_eq!(image, None);
@@ -769,6 +914,10 @@ mod tests {
                     r#"{"data":[{"id":"gemma-gguf","architecture":{"input_modalities":["text","image"]}}]}"#,
                 ),
                 (
+                    "/props",
+                    r#"{"default_generation_settings":{"n_ctx":65536,"params":{"n_predict":4096}},"chat_template_caps":{"supports_tool_calls":true},"model_path":"C:\\private\\synthetic.gguf","chat_template":"private synthetic template"}"#,
+                ),
+                (
                     "/metrics",
                     "# HELP llamacpp:predicted_tokens_seconds throughput\n",
                 ),
@@ -793,11 +942,14 @@ mod tests {
         assert_eq!(status.capabilities.image_input_advertised, Some(true));
         assert!(status.capabilities.metrics);
         assert!(status.capabilities.tools);
-        assert_eq!(status.capabilities.tools_advertised, None);
+        assert_eq!(status.capabilities.tools_advertised, Some(true));
         assert_eq!(status.capabilities.tools_validated, None);
         assert_eq!(status.capabilities.reasoning, None);
-        assert_eq!(status.context_tokens, None);
-        assert_eq!(status.response_max_tokens, None);
+        assert_eq!(status.context_tokens, Some(65536));
+        assert_eq!(status.response_max_tokens, Some(4096));
+        let diagnostic = serde_json::to_string(&status).unwrap();
+        assert!(!diagnostic.contains("private"));
+        assert!(!diagnostic.contains("template"));
         assert!(status.externally_managed);
     }
 
@@ -808,6 +960,7 @@ mod tests {
         let server = thread::spawn(move || {
             for (path, body) in [
                 ("/v1/models", r#"{"data":[{"id":"gguf"}]}"#),
+                ("/props", "{}"),
                 ("/metrics", ""),
             ] {
                 let (mut s, _) = listener.accept().unwrap();
@@ -820,6 +973,23 @@ mod tests {
         let status = run_async(check_llama(&format!("http://{address}"), None)).unwrap();
         server.join().unwrap();
         assert_eq!(status.model.as_deref(), Some("gguf"));
+        assert_eq!(status.context_tokens, None);
+        assert_eq!(status.response_max_tokens, None);
+        let mut status = status;
+        apply_props(
+            &mut status,
+            &json!({"n_ctx_train": 131072, "default_generation_settings": {"n_ctx": 0, "params": {"n_predict": -1}}}),
+        );
+        assert_eq!(status.context_tokens, None);
+        assert_eq!(status.response_max_tokens, None);
+    }
+
+    #[test]
+    fn metrics_do_not_treat_usage_or_private_labels_as_context_configuration() {
+        let metrics = parse_metrics("llamacpp:predicted_tokens_seconds 21.5\nllamacpp:n_tokens_max 2048\nprivate_prompt{user=\"synthetic\"} 1\nllamacpp:requests_processing NaN");
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics["llamacpp:predicted_tokens_seconds"], 21.5);
+        assert!(!serde_json::to_string(&metrics).unwrap().contains("private"));
     }
 
     #[test]
@@ -839,11 +1009,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
-            for _ in 0..4 {
+            for _ in 0..6 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let path = request(&mut stream);
                 if path.starts_with("GET /v1/models ") {
                     json_response(&mut stream, "200 OK", r#"{"data":[{"id":"Lucille"}]}"#);
+                } else if path.starts_with("GET /props ") {
+                    json_response(&mut stream, "404 Not Found", "{}");
                 } else {
                     assert!(path.starts_with("GET /metrics "));
                     json_response(&mut stream, "200 OK", "metrics");

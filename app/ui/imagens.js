@@ -3,6 +3,8 @@
   const { listen } = window.__TAURI__.event;
   const $ = (id) => document.getElementById(id);
   const { el, avisar } = window.ordis;
+  let comfyState = null;
+  let freeVram = null;
 
   const ETAPAS = {
     preparing: 'Preparando a geração…',
@@ -17,11 +19,17 @@
     failed: 'Finalizando após uma falha…',
   };
   const aviso = () => {
+    const readiness = comfyState?.model_available === false
+      ? 'Modelo/fluxo selecionado ausente. Escolha um checkpoint encontrado ou importe um fluxo em Configurações. '
+      : comfyState && !comfyState.connected && !comfyState.managed
+        ? 'ComfyUI externo desconectado. Confira o endereço e inicie o serviço externamente. '
+        : '';
+    const memory = freeVram != null && freeVram < 4 ? `Apenas ${freeVram.toFixed(1)} GiB de VRAM livre; a geração pode falhar por memória, conforme o workflow. ` : '';
     const backend = window.ordis.backendStatus();
     if (backend?.backend === 'llama_cpp') {
-      return 'llama.cpp é um servidor externo e permanece ativo durante a geração. O uso simultâneo de VRAM com o ComfyUI depende da configuração do servidor.';
+      return `${readiness}${memory}llama.cpp é externo e permanece ativo durante a geração. O ORDIS não descarrega o GGUF para liberar memória.`;
     }
-    return `Ao gerar, o ${window.ordis.nomes().conversa} sai da GPU e volta no fim. Leva alguns minutos.`;
+    return `${readiness}${memory}${backend?.externally_managed || comfyState?.managed === false ? 'Sem troca automática da GPU com serviços externos.' : 'Ao gerar, o TabbyAPI gerenciado sai da GPU e volta no fim.'}`;
   };
 
   let gerando = false;
@@ -122,7 +130,7 @@
   function ocupado(sim) {
     gerando = sim;
     window.ordis.definirTroca(sim);
-    $('img-gerar').disabled = sim;
+    $('img-gerar').disabled = sim || !window.ordisBackendStatus.imageGenerationAllowed(comfyState);
     $('img-gerar').textContent = sim ? 'Gerando…' : 'Gerar imagem';
     $('img-cancelar').hidden = !sim;
     $('img-cancelar').disabled = !sim;
@@ -135,6 +143,10 @@
 
   async function gerar() {
     if (gerando) return;
+    if (!window.ordisBackendStatus.imageGenerationAllowed(comfyState)) {
+      avisar(aviso(), true);
+      return;
+    }
     const prompt = $('img-prompt').value;
     if (!prompt.trim()) {
       $('img-prompt').focus();
@@ -174,13 +186,27 @@
         galeria();
       }
     } catch (e) {
-      $('img-estado').textContent = aviso();
+      $('img-estado').textContent = 'Falha na geração. Consulte a mensagem de erro.';
+      $('img-resource-warning').textContent = aviso();
       avisar(`Falha: ${e}`, true);
     } finally {
       clearInterval(relogio);
       ocupado(false);
     }
   }
+
+  window.addEventListener('comfy-status', ({ detail }) => {
+    comfyState = detail;
+    if (!gerando) {
+      $('img-gerar').disabled = !window.ordisBackendStatus.imageGenerationAllowed(detail);
+      $('img-resource-warning').textContent = aviso();
+    }
+  });
+  window.addEventListener('painel', ({ detail }) => {
+    const match = detail.vram?.match(/([\d.]+)\s*MiB,\s*([\d.]+)\s*MiB/);
+    freeVram = match ? Math.max(0, (Number(match[2]) - Number(match[1])) / 1024) : null;
+    $('img-resource-warning').textContent = aviso();
+  });
 
   listen('imagem', ({ payload: s }) => {
     if (!gerando) return;
@@ -224,12 +250,12 @@
   $('img-pasta').addEventListener('click', () => invoke('abrir_no_windows', { caminho: 'imagens' }));
   window.addEventListener('aba', (e) => {
     if (e.detail === 'imagens') {
-      $('img-subtitulo').textContent = `${window.ordis.nomes().imagem}, gerado localmente. O prompt vai exatamente como escrito.`;
+      $('img-subtitulo').textContent = 'ComfyUI configurado. O prompt é enviado ao endereço escolhido.';
       if (!gerando && !/^Concluída|cancelada/.test($('img-estado').textContent)) $('img-estado').textContent = aviso();
       galeria();
     }
   });
-  window.addEventListener('backend-refresh', () => {
-    if (!gerando) $('img-estado').textContent = aviso();
+  window.addEventListener('backend-status', () => {
+    $('img-resource-warning').textContent = aviso();
   });
 })();

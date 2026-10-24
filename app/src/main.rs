@@ -3,10 +3,12 @@
 mod agente;
 mod backends;
 mod controle;
+mod diagnostics;
 mod ferramentas;
 mod imagens;
 mod modelos;
 mod proxmox;
+mod settings;
 mod win;
 
 use std::os::windows::process::CommandExt;
@@ -42,20 +44,56 @@ struct EventosAgente {
 
 impl agente::Saida for EventosAgente {
     fn evento(&self, tipo: &str, dados: Value) {
-        let _ = self.app.emit("agente", json!({"sessao": self.sessao, "tipo": tipo, "dados": dados}));
+        let _ = self.app.emit(
+            "agente",
+            json!({"sessao": self.sessao, "tipo": tipo, "dados": dados}),
+        );
     }
 }
 
 async fn em_segundo_plano<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn painel(c: State<'_, Ctx>) -> Result<Painel, String> {
     let c = c.inner().clone();
     em_segundo_plano(move || Ok(controle::painel(&c.caminhos))).await
+}
+
+#[tauri::command]
+async fn hardware_diagnostics(c: State<'_, Ctx>) -> Result<Value, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || Ok(diagnostics::snapshot(&c.caminhos))).await
+}
+
+#[tauri::command]
+fn local_settings(c: State<'_, Ctx>) -> settings::Settings {
+    settings::load(&c.caminhos)
+}
+
+#[tauri::command]
+fn local_settings_save(c: State<'_, Ctx>, value: settings::Settings) -> Result<(), String> {
+    if c.resposta.lock().unwrap().is_some() || c.imagem.lock().unwrap().is_some() {
+        return Err("Aguarde ou cancele a geração antes de alterar serviços.".into());
+    }
+    let old = settings::load(&c.caminhos);
+    if (old.comfy_url != value.comfy_url || old.manage_comfy != value.manage_comfy)
+        && controle::ler_estado(&c.caminhos).contains_key("imagens")
+    {
+        return Err("Desligue o ComfyUI gerenciado pelo painel antes de alterar seu endereço ou gerenciamento.".into());
+    }
+    settings::save(&c.caminhos, value)
+}
+
+#[tauri::command]
+async fn comfy_status(c: State<'_, Ctx>) -> Result<diagnostics::ComfyStatus, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || Ok(diagnostics::comfy(&c.caminhos))).await
 }
 
 #[tauri::command]
@@ -116,17 +154,23 @@ async fn enviar(
     texto: String,
     anexos: Vec<String>,
 ) -> Result<(), String> {
-    responder(app, c.inner().clone(), id.clone(), move |c, cancelar, saida| {
-        agente::responder(c, &id, texto, anexos, cancelar, saida)
-    })
+    responder(
+        app,
+        c.inner().clone(),
+        id.clone(),
+        move |c, cancelar, saida| agente::responder(c, &id, texto, anexos, cancelar, saida),
+    )
     .await
 }
 
 #[tauri::command]
 async fn refazer(app: AppHandle, c: State<'_, Ctx>, id: String) -> Result<(), String> {
-    responder(app, c.inner().clone(), id.clone(), move |c, cancelar, saida| {
-        agente::refazer(c, &id, cancelar, saida)
-    })
+    responder(
+        app,
+        c.inner().clone(),
+        id.clone(),
+        move |c, cancelar, saida| agente::refazer(c, &id, cancelar, saida),
+    )
     .await
 }
 
@@ -184,7 +228,11 @@ async fn imagem(c: State<'_, Ctx>, caminho: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn gerar_imagem(app: AppHandle, c: State<'_, Ctx>, parametros: Value) -> Result<Value, String> {
+async fn gerar_imagem(
+    app: AppHandle,
+    c: State<'_, Ctx>,
+    parametros: Value,
+) -> Result<Value, String> {
     let c = c.inner().clone();
     let cancelar = Arc::new(AtomicBool::new(false));
     {
@@ -221,19 +269,29 @@ fn imagens_recentes(c: State<'_, Ctx>) -> Vec<Value> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path().display().to_string())))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+        })
+        .filter_map(|e| {
+            Some((
+                e.metadata().ok()?.modified().ok()?,
+                e.path().display().to_string(),
+            ))
+        })
         .collect();
     lista.sort_by(|a, b| b.0.cmp(&a.0));
     lista
         .into_iter()
         .take(60)
         .map(|(_, p)| {
-            let parametros = std::fs::read_to_string(std::path::Path::new(&p).with_extension("json"))
-                .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .map(|v| v["parameters"].clone())
-                .unwrap_or(Value::Null);
+            let parametros =
+                std::fs::read_to_string(std::path::Path::new(&p).with_extension("json"))
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                    .map(|v| v["parameters"].clone())
+                    .unwrap_or(Value::Null);
             serde_json::json!({"file": p, "parameters": parametros})
         })
         .collect()
@@ -243,7 +301,11 @@ fn imagens_recentes(c: State<'_, Ctx>) -> Vec<Value> {
 #[tauri::command]
 fn abrir_no_windows(c: State<'_, Ctx>, caminho: String) -> Result<(), String> {
     let alvo = ferramentas::dentro_do_workspace(&c.caminhos, &caminho)?;
-    Command::new("explorer.exe").arg(alvo).spawn().map(|_| ()).map_err(|e| e.to_string())
+    Command::new("explorer.exe")
+        .arg(alvo)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -286,14 +348,22 @@ async fn modelos_salvar(
 ) -> Result<Value, String> {
     let c = c.inner().clone();
     if c.resposta.lock().unwrap().is_some() {
-        return Err("O agente está respondendo. Aguarde ou interrompa antes de trocar o modelo.".into());
+        return Err(
+            "O agente está respondendo. Aguarde ou interrompa antes de trocar o modelo.".into(),
+        );
     }
     if c.imagem.lock().unwrap().is_some() {
-        return Err("Há uma imagem sendo gerada. Aguarde ou cancele antes de trocar o modelo.".into());
+        return Err(
+            "Há uma imagem sendo gerada. Aguarde ou cancele antes de trocar o modelo.".into(),
+        );
     }
     em_segundo_plano(move || {
         let ligado = backends::active_kind(&c.caminhos) == backends::BackendKind::Tabbyapi
-            && controle::painel(&c.caminhos).servicos.iter().any(|s| s.nome == "inferencia" && s.situacao != "desligado");
+            && backends::manages_tabby(&c.caminhos)
+            && controle::painel(&c.caminhos)
+                .servicos
+                .iter()
+                .any(|s| s.nome == "inferencia" && s.situacao != "desligado");
         let mudou = modelos::salvar(&c.caminhos, &conversa, &imagem)?;
         let reiniciar = mudou && ligado;
         if reiniciar {
@@ -317,7 +387,11 @@ async fn modelos_testar_conversa(app: AppHandle, c: State<'_, Ctx>) -> Result<Va
 }
 
 #[tauri::command]
-fn modelos_importar_fluxo(c: State<'_, Ctx>, nome: String, conteudo: String) -> Result<String, String> {
+fn modelos_importar_fluxo(
+    c: State<'_, Ctx>,
+    nome: String,
+    conteudo: String,
+) -> Result<String, String> {
     modelos::importar_fluxo(&c.caminhos, &nome, &conteudo)
 }
 
@@ -325,9 +399,16 @@ fn modelos_importar_fluxo(c: State<'_, Ctx>, nome: String, conteudo: String) -> 
 #[tauri::command]
 fn modelos_abrir_pasta(c: State<'_, Ctx>, qual: String) -> Result<(), String> {
     let v = modelos::opcoes(&c.caminhos);
-    let pasta = v["pastas"][qual.as_str()].as_str().ok_or("Pasta desconhecida.")?.to_string();
+    let pasta = v["pastas"][qual.as_str()]
+        .as_str()
+        .ok_or("Pasta desconhecida.")?
+        .to_string();
     std::fs::create_dir_all(&pasta).map_err(|e| e.to_string())?;
-    Command::new("explorer.exe").arg(pasta).spawn().map(|_| ()).map_err(|e| e.to_string())
+    Command::new("explorer.exe")
+        .arg(pasta)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -362,9 +443,17 @@ fn main() {
         }
     };
     tauri::Builder::default()
-        .manage::<Ctx>(Arc::new(App { caminhos, resposta: Mutex::new(None), imagem: Mutex::new(None) }))
+        .manage::<Ctx>(Arc::new(App {
+            caminhos,
+            resposta: Mutex::new(None),
+            imagem: Mutex::new(None),
+        }))
         .invoke_handler(tauri::generate_handler![
             painel,
+            hardware_diagnostics,
+            local_settings,
+            local_settings_save,
+            comfy_status,
             iniciar,
             parar,
             abrir_logs,

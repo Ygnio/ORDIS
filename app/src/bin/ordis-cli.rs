@@ -5,12 +5,14 @@
 
 #[path = "../agente.rs"]
 mod agente;
-#[path = "../benchmark.rs"]
-mod benchmark;
 #[path = "../backends.rs"]
 mod backends;
+#[path = "../benchmark.rs"]
+mod benchmark;
 #[path = "../controle.rs"]
 mod controle;
+#[path = "../diagnostics.rs"]
+mod diagnostics;
 #[path = "../ferramentas.rs"]
 mod ferramentas;
 #[path = "../imagens.rs"]
@@ -19,6 +21,8 @@ mod imagens;
 mod modelos;
 #[path = "../proxmox.rs"]
 mod proxmox;
+#[path = "../settings.rs"]
+mod settings;
 #[path = "../win.rs"]
 mod win;
 
@@ -50,6 +54,10 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
         "iniciar" => controle::iniciar(c, &imprimir)?,
         "parar" => controle::parar(c, &imprimir)?,
         "estado" => {}
+        "diagnostico" => {
+            println!("{}", serde_json::to_string_pretty(&diagnostics::snapshot(c)).unwrap());
+            return Ok(());
+        }
         "perguntar" => {
             let texto = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
             let s = agente::nova(c)?;

@@ -112,7 +112,8 @@
           <button id="img-cancelar" hidden>Cancelar</button>
         </div>
         <div class="progresso" id="img-progresso" hidden><div id="img-barra"></div></div>
-        <p id="img-estado" class="sutil pequeno">Ao gerar, o Qwen sai da GPU e volta no fim. Leva alguns minutos.</p>
+        <p id="img-resource-warning" class="sutil pequeno" role="status"></p>
+        <p id="img-estado" class="sutil pequeno">Consulte o serviço e o modelo de imagem nas Configurações.</p>
       </section>
       <section class="visor">
         <div id="img-visor" class="quadro">
@@ -184,6 +185,14 @@
         </div>
       </section>
 
+      <section class="secao" id="secao-diagnostico">
+        <div class="linha-config"><h2>Hardware e serviços <span class="fraco">somente leitura</span></h2><button id="diagnostico-atualizar">Atualizar diagnóstico</button></div>
+        <p class="sutil pequeno">Consulta esta máquina e os serviços configurados. Não instala componentes nem altera o servidor.</p>
+        <p id="diagnostico-estado" class="sutil pequeno" role="status">Use Atualizar diagnóstico para consultar.</p>
+        <div id="diagnostico-dados" class="capability-grid"></div>
+        <div id="diagnostico-avisos" class="aviso-campo" role="status"></div>
+      </section>
+
       <section id="secao-modelos" class="secao">
         <h2>Modelos</h2>
         <div class="cartao">
@@ -211,9 +220,9 @@
           <p id="backend-nota" class="sutil pequeno">O llama.cpp é conectado como serviço externo. O ORDIS não controla seu processo.</p>
           <div class="acoes">
             <button id="backend-salvar" class="primario">Salvar backend e testar</button>
-            <button id="backend-testar">Testar conexão</button>
+            <button id="backend-testar">Testar backend salvo</button>
           </div>
-          <div id="backend-status" class="sutil pequeno" role="status"></div>
+          <div id="backend-status" class="capability-grid" role="status"></div>
         </div>
         <div class="cartao">
           <div id="tabby-model-config">
@@ -249,7 +258,7 @@
             <label class="chave"><input id="mc-visao" type="checkbox"><span></span>Visão (ler imagens)</label>
           </div>
           <div class="linha-mtp">
-            <label class="chave"><input id="mc-mtp" type="checkbox"><span></span>MTP: gera ~65% mais rápido, usa ~1 GB a mais de VRAM</label>
+            <label class="chave"><input id="mc-mtp" type="checkbox"><span></span>MTP: requer modelo compatível e VRAM adicional</label>
             <label class="campo-mtp" for="mc-mtp-tokens">Tokens adiantados <input id="mc-mtp-tokens" type="number" min="1" max="8"></label>
           </div>
           </div>
@@ -257,6 +266,13 @@
         </div>
 
         <div class="cartao">
+          <p class="rotulo">Serviço de imagens · ComfyUI</p>
+          <label for="comfy-url">Endereço do ComfyUI</label>
+          <input id="comfy-url" type="url" placeholder="http://127.0.0.1:8188" spellcheck="false">
+          <label class="chave"><input id="comfy-manage" type="checkbox"><span></span>Gerenciar a instalação local do ORDIS (porta 8188)</label>
+          <p class="sutil pequeno">Desmarque para conectar a um ComfyUI externo, que permanecerá ativo após a geração. O ORDIS nunca altera o processo llama.cpp.</p>
+          <div class="acoes"><button id="comfy-salvar">Salvar serviço</button><button id="comfy-testar">Consultar estado e modelos</button></div>
+          <p id="comfy-estado" class="sutil pequeno" role="status"></p>
           <div class="linha-config">
             <p class="rotulo">Imagem</p>
             <div id="mi-fonte" class="segmentos">
@@ -339,6 +355,28 @@
         </div>
       </section>
 
+      <section class="secao" id="secao-desenvolvedor">
+        <h2>Modo Desenvolvedor <span class="fraco">planejamento</span></h2>
+        <div class="cartao">
+          <p class="sutil pequeno">Preferências para uma fase futura. Salvar não concede acesso ao workspace, edição, terminal, Git ou GitHub.</p>
+          <label for="dev-workspace">Workspace separado pretendido</label><input id="dev-workspace" spellcheck="false" autocomplete="off">
+          <label for="dev-repositories">Repositórios pretendidos <span class="fraco">um caminho por linha</span></label><textarea id="dev-repositories" rows="3" spellcheck="false" autocomplete="off"></textarea>
+          <div class="grade-campos">
+            <div><label for="dev-shell">Shell preferido</label><input id="dev-shell" spellcheck="false"></div>
+            <div><label for="dev-git">Caminho do Git</label><input id="dev-git" spellcheck="false"></div>
+            <div><label for="dev-python">Caminho do Python</label><input id="dev-python" spellcheck="false"></div>
+            <div><label for="dev-node">Caminho do Node.js</label><input id="dev-node" spellcheck="false"></div>
+            <div><label for="dev-cargo">Caminho do Cargo</label><input id="dev-cargo" spellcheck="false"></div>
+            <div><label for="dev-timeout">Limite por comando futuro (segundos)</label><input id="dev-timeout" type="number" min="1" max="3600"></div>
+            <div><label for="dev-long-task">Limite de tarefa futura (minutos)</label><input id="dev-long-task" type="number" min="1" max="1440"></div>
+          </div>
+          <label class="chave"><input id="dev-logs" type="checkbox"><span></span>Preferir logs locais no futuro</label>
+          <dl class="policy-list"><dt>Permissões de leitura, escrita e execução</dt><dd>Desativadas</dd><dt>Commits e pushes pelo agente</dt><dd>Desativados</dd><dt>Confirmação de ações futuras</dt><dd>Sempre</dd><dt>Atualização da instalação ativa</dt><dd>Somente a partir de workspace separado, com testes, backup e reversão</dd></dl>
+          <button id="dev-salvar">Salvar preferências de planejamento</button>
+          <p id="dev-estado" class="sutil pequeno" role="status"></p>
+        </div>
+      </section>
+
       <section class="secao">
         <h2>Atalhos</h2>
         <div class="cartao atalhos">
@@ -363,5 +401,6 @@
   <script src="imagens.js"></script>
   <script src="config.js"></script>
   <script src="modelos.js"></script>
+  <script src="hardware-settings.js"></script>
 </body>
 </html>
