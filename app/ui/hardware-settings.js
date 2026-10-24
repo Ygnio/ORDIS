@@ -73,13 +73,7 @@
     preferences = await invoke('local_settings');
     $('comfy-url').value = preferences.comfy_url;
     $('comfy-manage').checked = preferences.manage_comfy;
-    const d = preferences.developer;
-    for (const name of ['workspace', 'shell', 'git', 'python', 'node', 'cargo']) $(`dev-${name}`).value = d[name];
-    $('dev-repositories').value = d.repositories.join('\n');
-    $('dev-timeout').value = d.timeout_seconds;
-    $('dev-long-task').value = d.long_task_minutes;
-    $('dev-logs').checked = d.local_logs;
-    $('dev-estado').textContent = 'Preferências locais; nenhuma permissão ativa.';
+
   }
 
   $('diagnostico-atualizar').addEventListener('click', diagnostic);
@@ -98,23 +92,6 @@
       await refreshComfy();
       window.dispatchEvent(new CustomEvent('comfy-settings-saved'));
       avisar('Endereço do ComfyUI salvo.');
-    } catch (error) { avisar(String(error), true); }
-    finally { button.disabled = false; }
-  });
-  $('dev-salvar').addEventListener('click', async () => {
-    const button = $('dev-salvar');
-    button.disabled = true;
-    try {
-      const current = await invoke('local_settings');
-      const d = { ...current.developer };
-      for (const name of ['workspace', 'shell', 'git', 'python', 'node', 'cargo']) d[name] = $(`dev-${name}`).value.trim();
-      d.repositories = $('dev-repositories').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-      d.timeout_seconds = Number($('dev-timeout').value);
-      d.long_task_minutes = Number($('dev-long-task').value);
-      d.local_logs = $('dev-logs').checked;
-      await invoke('local_settings_save', { value: { ...current, developer: d } });
-      $('dev-estado').textContent = 'Planejamento salvo localmente. Permissões continuam desativadas.';
-      avisar('Preferências de planejamento salvas.');
     } catch (error) { avisar(String(error), true); }
     finally { button.disabled = false; }
   });

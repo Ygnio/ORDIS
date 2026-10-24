@@ -765,6 +765,7 @@
   window.addEventListener('aba', (e) => {
     if (e.detail === 'agente') setTimeout(() => $('entrada').focus(), 0);
   });
+  window.ordisOpenDeveloperTask = async (id) => { window.ordis.mostrarAba('agente'); await abrir(id); };
   setInterval(() => atualizarBackendStatus(), 15_000);
   atualizarBackendStatus(true);
 

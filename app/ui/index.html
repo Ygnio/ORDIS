@@ -431,24 +431,28 @@
       </section>
 
       <section class="secao" id="secao-desenvolvedor">
-        <h2>Modo Desenvolvedor <span class="fraco">planejamento</span></h2>
+        <h2>Modo Desenvolvedor</h2>
         <div class="cartao">
-          <p class="sutil pequeno">Preferências para uma fase futura. Salvar não concede acesso ao workspace, edição, terminal, Git ou GitHub.</p>
-          <label for="dev-workspace">Workspace separado pretendido</label><input id="dev-workspace" spellcheck="false" autocomplete="off">
-          <label for="dev-repositories">Repositórios pretendidos <span class="fraco">um caminho por linha</span></label><textarea id="dev-repositories" rows="3" spellcheck="false" autocomplete="off"></textarea>
+          <p class="sutil pequeno">Workspace separado. Cada escrita e execução exige aprovação humana. Git e administração indisponíveis. Python puro/math/unittest; PowerShell literal restrito.</p>
+          <label class="chave"><input id="dev-enabled" type="checkbox"><span></span>Ativar modo Desenvolvedor</label>
+          <label for="dev-workspace">Workspace autorizado (caminho absoluto existente)</label><input id="dev-workspace" spellcheck="false" autocomplete="off">
+          <label class="chave"><input id="dev-read" type="checkbox"><span></span>Permitir leitura</label>
+          <label class="chave"><input id="dev-write" type="checkbox"><span></span>Propor alterações com aprovação</label>
+          <label class="chave"><input id="dev-execute" type="checkbox"><span></span>Propor execuções restritas com aprovação</label>
           <div class="grade-campos">
-            <div><label for="dev-shell">Shell preferido</label><input id="dev-shell" spellcheck="false"></div>
-            <div><label for="dev-git">Caminho do Git</label><input id="dev-git" spellcheck="false"></div>
-            <div><label for="dev-python">Caminho do Python</label><input id="dev-python" spellcheck="false"></div>
-            <div><label for="dev-node">Caminho do Node.js</label><input id="dev-node" spellcheck="false"></div>
-            <div><label for="dev-cargo">Caminho do Cargo</label><input id="dev-cargo" spellcheck="false"></div>
-            <div><label for="dev-timeout">Limite por comando futuro (segundos)</label><input id="dev-timeout" type="number" min="1" max="3600"></div>
-            <div><label for="dev-long-task">Limite de tarefa futura (minutos)</label><input id="dev-long-task" type="number" min="1" max="1440"></div>
+            <div><label for="dev-python">Executável Python instalado (caminho absoluto)</label><input id="dev-python" spellcheck="false"></div>
+            <div><label for="dev-shell">Executável PowerShell instalado (caminho absoluto)</label><input id="dev-shell" spellcheck="false"></div>
+            <div><label for="dev-timeout">Timeout por execução (segundos)</label><input id="dev-timeout" type="number" min="1" max="600"></div>
+            <div><label for="dev-calls">Chamadas por turno</label><input id="dev-calls" type="number" min="1" max="64"></div>
+            <div><label for="dev-file-limit">Limite de edição (bytes)</label><input id="dev-file-limit" type="number" min="1024" max="8388608"></div>
+            <div><label for="dev-read-limit">Limite de leitura (bytes)</label><input id="dev-read-limit" type="number" min="512" max="128000"></div>
+            <div><label for="dev-output-limit">Limite de saída (bytes)</label><input id="dev-output-limit" type="number" min="512" max="256000"></div>
           </div>
-          <label class="chave"><input id="dev-logs" type="checkbox"><span></span>Preferir logs locais no futuro</label>
-          <dl class="policy-list"><dt>Permissões de leitura, escrita e execução</dt><dd>Desativadas</dd><dt>Commits e pushes pelo agente</dt><dd>Desativados</dd><dt>Confirmação de ações futuras</dt><dd>Sempre</dd><dt>Atualização da instalação ativa</dt><dd>Somente a partir de workspace separado, com testes, backup e reversão</dd></dl>
-          <button id="dev-salvar">Salvar preferências de planejamento</button>
+          <p class="sutil pequeno">Aprovação por operação · backups e histórico privados obrigatórios · sem elevação · recusa bloqueia mutações até novo pedido.</p>
+          <button id="dev-salvar">Salvar permissões locais</button>
+          <button id="dev-history-refresh">Atualizar histórico</button>
           <p id="dev-estado" class="sutil pequeno" role="status"></p>
+          <div id="dev-history"></div>
         </div>
       </section>
 
@@ -466,6 +470,7 @@
     </main>
   </div>
 
+  <aside id="dev-approval-panel" class="dev-approval-panel" hidden aria-live="polite"></aside>
   <div id="avisos" class="avisos"></div>
   <div id="dica" class="dica" hidden></div>
 
@@ -480,5 +485,6 @@
   <script src="hardware-settings.js"></script>
   <script src="memory.js"></script>
   <script src="identity.js"></script>
+  <script src="developer.js"></script>
 </body>
 </html>

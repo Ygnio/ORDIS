@@ -739,3 +739,5 @@ select option { background: var(--solido); color: var(--texto); }
 .response-metrics { font-size: 11px; line-height: 1.7; color: var(--sutil); margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
 .metrics-hidden .response-metrics { display: none; }
 @media (max-width: 700px) { .policy-list { grid-template-columns: 1fr; } }
+.dev-approval-panel { position:fixed; right:16px; bottom:16px; z-index:80; width:min(620px,94vw); max-height:75vh; overflow:auto; box-shadow:0 4px 24px #0008; } .dev-approval-panel pre, #dev-history pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:300px; overflow:auto; }
+
