@@ -857,10 +857,13 @@ fn migration_creates_valid_consistent_v3_backup_before_changes() {
                 .unwrap()
                 .to_string_lossy()
                 .starts_with("snapshot-premigration-v3-")
+                && p.extension().is_some_and(|e| e == "sqlite3")
         })
         .collect();
     assert_eq!(backups.len(), 1);
     validate_backup(&backups[0]).unwrap();
+    assert!(!PathBuf::from(format!("{}-wal", backups[0].display())).exists());
+    assert!(!PathBuf::from(format!("{}-shm", backups[0].display())).exists());
     let backup = Connection::open(&backups[0]).unwrap();
     assert_eq!(
         backup
@@ -944,4 +947,13 @@ fn migration_backup_failure_preserves_original_schema() {
             .unwrap(),
         3
     );
+}
+
+#[test]
+fn interruption_pauses_automatic_consolidation() {
+    stop();
+    assert!(AUTO_PAUSED.load(Ordering::SeqCst));
+    assert!(STOP_CONSOLIDATION.load(Ordering::SeqCst));
+    AUTO_PAUSED.store(false, Ordering::SeqCst);
+    STOP_CONSOLIDATION.store(false, Ordering::SeqCst);
 }

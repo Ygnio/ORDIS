@@ -839,6 +839,9 @@ impl Store {
             .map_err(error)?
             .run_to_completion(64, Duration::from_millis(5), None)
             .map_err(error)?;
+        dest.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+            .map_err(error)?;
+        drop(dest);
         validate_backup(&path)?;
         Ok(name)
     }
@@ -1049,6 +1052,8 @@ fn pre_migration_backup(db: &Connection, path: &Path, version: i64) -> Result<Pa
     rusqlite::backup::Backup::new(db, &mut dest)
         .map_err(error)?
         .run_to_completion(64, Duration::from_millis(5), None)
+        .map_err(error)?;
+    dest.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
         .map_err(error)?;
     drop(dest);
     validate_backup(&backup).map_err(|_| "Backup pré-migração inválido; atualização cancelada.")?;
@@ -1629,8 +1634,8 @@ pub fn idle_tick(c: &Caminhos) -> Result<(), String> {
         }
         let mut s = Store::open(&path)?;
         replay_pending(c, &mut s)?;
-        let pending:i64=s.db.query_row("SELECT count(*) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' AND m.ordinal>coalesce(c.last_ordinal,-1)",[],|r|r.get(0)).map_err(error)?;
-        if pending == 0 {
+        let pending:bool=s.db.query_row("SELECT EXISTS(SELECT 1 FROM conversations c LEFT JOIN consolidation k ON k.conversation_id=c.id WHERE EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.role='user' AND m.ordinal>coalesce(k.last_ordinal,-1)))",[],|r|r.get(0)).map_err(error)?;
+        if !pending {
             return Ok(());
         }
         let o = s.options()?;
