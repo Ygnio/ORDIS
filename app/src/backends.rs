@@ -166,16 +166,13 @@ async fn get_json(url: &str, key: Option<&str>, timeout: Duration) -> Result<Val
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(k);
     }
-    let r = req
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                format!("Tempo limite ao conectar ao servidor: {e}")
-            } else {
-                format!("Falha de conexão: {e}")
-            }
-        })?;
+    let r = req.send().await.map_err(|e| {
+        if e.is_timeout() {
+            format!("Tempo limite ao conectar ao servidor: {e}")
+        } else {
+            format!("Falha de conexão: {e}")
+        }
+    })?;
     let status = r.status();
     if !status.is_success() {
         let body = r.text().await.unwrap_or_default();
