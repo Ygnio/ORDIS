@@ -1,10 +1,9 @@
 //! Agente nativo: conversa com o Qwen pelo TabbyAPI, executa as ferramentas
 //! pedidas e guarda as sessões em runtime/agente/sessoes.
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::{Deserialize, Serialize};
@@ -14,17 +13,12 @@ use crate::controle::{self, Caminhos};
 use crate::ferramentas::{self, Contexto};
 use crate::modelos;
 
+pub use crate::backends::ToolCall as Chamada;
+
 const RODADAS_MAX: usize = 12;
 /// Estimativa grosseira para português e JSON; o Tabby recusa se passar do limite.
 const CARACTERES_POR_TOKEN: usize = 3;
 const TOKENS_POR_IMAGEM: usize = 1_200;
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Chamada {
-    pub id: String,
-    pub nome: String,
-    pub argumentos: String,
-}
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Mensagem {
@@ -190,6 +184,7 @@ fn conteudo_usuario(texto: &str, imagens: &[String], enviar_imagens: bool) -> Va
 /// contexto estimado passar do orçamento. Só imagens do turno atual são enviadas.
 fn mensagens_api(c: &Caminhos, s: &Sessao) -> (Vec<Value>, usize) {
     let cfg = modelos::conversa(c);
+    let capacidades = crate::backends::active_capabilities(c);
     let orcamento = (cfg.contexto as usize).saturating_sub(cfg.max_tokens as usize + 1_500);
     let sistema = prompt_sistema(c);
     let custo = |m: &Mensagem| {
@@ -226,7 +221,7 @@ fn mensagens_api(c: &Caminhos, s: &Sessao) -> (Vec<Value>, usize) {
                 if atual {
                     estimado += m.imagens.len() * TOKENS_POR_IMAGEM;
                 }
-                saida.push(json!({"role": "user", "content": conteudo_usuario(&m.texto, &m.imagens, atual && cfg.visao)}));
+                    saida.push(json!({"role": "user", "content": conteudo_usuario(&m.texto, &m.imagens, atual && cfg.visao && capacidades.image_input)}));
             }
             "assistant" => {
                 let mut msg = json!({"role": "assistant", "content": m.texto});
@@ -276,85 +271,12 @@ struct Resposta {
     chamadas: Vec<Chamada>,
 }
 
-fn transmitir(
-    c: &Caminhos,
-    mensagens: &[Value],
-    cancelar: &AtomicBool,
-    saida: &dyn Saida,
-) -> Result<Resposta, String> {
-    let chave = controle::chave_api(c).ok_or("Chave da API do TabbyAPI não encontrada.")?;
+fn transmitir(c: &Caminhos, mensagens: &[Value], cancelar: &AtomicBool, saida: &dyn Saida) -> Result<Resposta, String> {
     let cfg = modelos::conversa(c);
-    let agente = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(600))
-        .build();
-    let corpo = json!({
-        "model": cfg.modelo,
-        "messages": mensagens,
-        "tools": ferramentas::definicoes(),
-        "stream": true,
-        "max_tokens": cfg.max_tokens,
-    });
-    let resposta = agente
-        .post("http://127.0.0.1:5000/v1/chat/completions")
-        .set("Authorization", &format!("Bearer {chave}"))
-        .send_json(corpo)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => {
-                let detalhe = r.into_string().unwrap_or_default();
-                format!("O modelo recusou o pedido (HTTP {code}). {}", detalhe.chars().take(400).collect::<String>())
-            }
-            e => format!("Falha ao falar com o modelo: {e}"),
-        })?;
-    let mut r = Resposta { texto: String::new(), raciocinio: String::new(), chamadas: vec![] };
-    for linha in BufReader::new(resposta.into_reader()).lines() {
-        if cancelar.load(Ordering::Relaxed) {
-            // Fechar a conexão faz o Tabby abandonar a geração.
-            break;
-        }
-        let linha = linha.map_err(|e| format!("Conexão com o modelo interrompida: {e}"))?;
-        let Some(dados) = linha.strip_prefix("data:").map(str::trim) else { continue };
-        if dados == "[DONE]" {
-            break;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(dados) else { continue };
-        let delta = &v["choices"][0]["delta"];
-        if let Some(t) = delta["reasoning_content"].as_str().filter(|t| !t.is_empty()) {
-            r.raciocinio.push_str(t);
-            saida.evento("raciocinio", json!({"texto": t}));
-        }
-        if let Some(t) = delta["content"].as_str().filter(|t| !t.is_empty()) {
-            r.texto.push_str(t);
-            saida.evento("texto", json!({"texto": t}));
-        }
-        for ch in delta["tool_calls"].as_array().into_iter().flatten() {
-            let indice = ch["index"].as_u64().unwrap_or(r.chamadas.len() as u64) as usize;
-            while r.chamadas.len() <= indice {
-                r.chamadas.push(Chamada { id: String::new(), nome: String::new(), argumentos: String::new() });
-            }
-            let alvo = &mut r.chamadas[indice];
-            if let Some(id) = ch["id"].as_str() {
-                alvo.id = id.to_string();
-            }
-            if let Some(n) = ch["function"]["name"].as_str() {
-                alvo.nome = n.to_string();
-            }
-            if let Some(a) = ch["function"]["arguments"].as_str() {
-                // O Tabby envia a chamada inteira de uma vez; outros servidores, em pedaços.
-                if serde_json::from_str::<Value>(a).is_ok() {
-                    alvo.argumentos = a.to_string();
-                } else {
-                    alvo.argumentos.push_str(a);
-                }
-            }
-        }
-    }
-    for (i, ch) in r.chamadas.iter_mut().enumerate() {
-        if ch.id.is_empty() {
-            ch.id = format!("call_{}_{i}", controle::sufixo_unico());
-        }
-    }
-    Ok(r)
+    let r = crate::backends::chat(c, mensagens, cfg.max_tokens, &ferramentas::definicoes().as_array().cloned().unwrap_or_default(), cancelar, &|tipo, dados| {
+        saida.evento(tipo, dados);
+    })?;
+    Ok(Resposta { texto: r.text, raciocinio: r.reasoning, chamadas: r.tool_calls })
 }
 
 /// Executa um turno completo: grava a pergunta, conversa com o modelo e roda

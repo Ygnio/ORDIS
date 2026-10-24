@@ -1,0 +1,132 @@
+name: Inference backend CI
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+jobs:
+  windows-gnu:
+    name: Windows GNU (original target)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-toolchain
+          path-type: inherit
+
+      - name: Verify GNU linker tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Command dlltool.exe, gcc.exe | Select-Object Name, Source | Format-Table -AutoSize
+          dlltool.exe --version
+          gcc.exe --version
+
+      - name: Install Rust GNU toolchain
+        shell: pwsh
+        run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component rustfmt
+
+      - name: Install Node.js and Python
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Reject private or generated files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tracked = git ls-files
+          $forbidden = $tracked | Where-Object {
+            $_ -match '(^|/)(runtime|target|node_modules|venv|\.venv|__pycache__)(/|$)' -or
+            $_ -match '(^|/)(\.env($|\.)|AGENTS\.local\.md|api_tokens\.yml|token\.dpapi|llama-api-key\.dpapi)$' -or
+            $_ -match '\.(gguf|exl3|safetensors|dpapi|pem|p12|pfx|key|log)$'
+          }
+          if ($forbidden) {
+            Write-Error "Private/generated files are tracked:`n$($forbidden -join "`n")"
+          }
+
+      - name: Scan for credentials
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check formatting of new Rust module
+        shell: pwsh
+        run: rustfmt --edition 2021 --check app/src/backends.rs
+
+      - name: Check JavaScript syntax
+        shell: pwsh
+        run: node --check app/ui/modelos.js
+
+      - name: Run Python tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
+      - name: Run Rust and mock-server tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path $env:RUNNER_TEMP 'cargo-test-gnu.log'
+          cargo test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload GNU build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-gnu-log
+          path: ${{ runner.temp }}/cargo-test-gnu.log
+          if-no-files-found: ignore
+
+  windows-msvc-compatibility:
+    name: Windows MSVC compatibility check
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Visual C++ environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Rust MSVC toolchain
+        shell: pwsh
+        run: rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal --component rustfmt
+
+      - name: Run Rust tests without changing the repository target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path $env:RUNNER_TEMP 'cargo-test-msvc.log'
+          cargo +stable-x86_64-pc-windows-msvc test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload MSVC build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-msvc-log
+          path: ${{ runner.temp }}/cargo-test-msvc.log
+          if-no-files-found: ignore

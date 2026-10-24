@@ -483,11 +483,13 @@ pub fn importar_fluxo(c: &Caminhos, nome: &str, conteudo: &str) -> Result<String
 // ---------- Teste do modelo de conversa ----------
 
 fn conversar(c: &Caminhos, corpo: Value) -> Result<Value, String> {
-    let chave = controle::chave_api(c).ok_or("Chave da API do TabbyAPI não encontrada.")?;
-    ureq::post("http://127.0.0.1:5000/v1/chat/completions")
-        .timeout(std::time::Duration::from_secs(300))
-        .set("Authorization", &format!("Bearer {chave}"))
-        .send_json(corpo)
+    let (base, chave) = crate::backends::active_endpoint(c);
+    let mut req = ureq::post(&format!("{}/v1/chat/completions", base.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(300));
+    if let Some(key) = chave.as_deref().filter(|k| !k.is_empty()) {
+        req = req.set("Authorization", &format!("Bearer {key}"));
+    }
+    req.send_json(corpo)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => {
                 format!("HTTP {code}: {}", r.into_string().unwrap_or_default().chars().take(300).collect::<String>())
@@ -501,7 +503,14 @@ fn conversar(c: &Caminhos, corpo: Value) -> Result<Value, String> {
 /// Carrega o modelo configurado (se preciso) e confere resposta simples,
 /// separação do raciocínio, chamada de ferramenta e, se ativada, visão.
 pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
-    let cfg = conversa(c);
+    let mut cfg = conversa(c);
+    if let Ok(modelo) = crate::backends::selected_model(c) { cfg.modelo = modelo; }
+    let capacidades = crate::backends::active_capabilities(c);
+    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
+        cfg.visao = capacidades.image_input;
+        cfg.raciocinio = capacidades.reasoning == Some(true);
+        cfg.ferramentas = if capacidades.tools { "llama.cpp".into() } else { String::new() };
+    }
     let mut etapas = vec![];
     fn etapa(etapas: &mut Vec<Value>, nome: &str, inicio: std::time::Instant, r: Result<String, String>) -> bool {
         let ok = r.is_ok();

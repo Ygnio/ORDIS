@@ -141,12 +141,11 @@ pub(crate) fn pronto(c: &Caminhos, nome: &str) -> bool {
     match nome {
         "imagens" => buscar("http://127.0.0.1:8188/system_stats", None)
             .is_some_and(|v| v.get("system").is_some()),
-        _ => {
-            let Some(chave) = chave_api(c) else { return false };
-            buscar("http://127.0.0.1:5000/v1/models", Some(&chave)).is_some_and(|v| {
-                v["data"].as_array().is_some_and(|d| d.iter().any(|m| m["id"] == crate::modelos::conversa(c).modelo.as_str()))
-            })
-        }
+        "inferencia" => crate::backends::check(c).is_ok_and(|s| {
+            crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp
+                || s.model.as_deref() == Some(crate::modelos::conversa(c).modelo.as_str())
+        }),
+        _ => false,
     }
 }
 
@@ -179,15 +178,20 @@ pub struct Painel {
 pub fn painel(c: &Caminhos) -> Painel {
     let estado = ler_estado(c);
     let mut sys = System::new();
+    let external_inference = crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp
+        || !crate::backends::manages_tabby(c);
     let servicos = SERVICOS
         .iter()
         .map(|&(nome, porta)| {
             let ativo = estado.get(nome).is_some_and(|i| rastreado(&mut sys, i));
-            let situacao = match (ativo, ativo && pronto(c, nome)) {
-                (_, true) => "pronto",
-                (true, false) => "iniciando",
-                _ => "desligado",
-            };
+            let externo_pronto = nome == "inferencia" && external_inference && pronto(c, nome);
+            let pronto = if nome == "inferencia" && external_inference { externo_pronto } else { ativo && pronto(c, nome) };
+            let situacao = if pronto { "pronto" } else if ativo && !(external_inference && nome == "inferencia") { "iniciando" } else { "desligado" };
+            let porta = if nome == "inferencia" && external_inference {
+                let s = crate::backends::settings(c);
+                let url = if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp { s.llama_url } else { s.tabby_url };
+                url.parse::<url::Url>().ok().and_then(|u| u.port_or_known_default()).unwrap_or(porta)
+            } else { porta };
             EstadoServico { nome, porta, situacao }
         })
         .collect();
@@ -371,6 +375,12 @@ pub(crate) fn iniciar_servico(
 }
 
 pub fn iniciar(c: &Caminhos, progresso: &dyn Fn(&str)) -> Result<(), String> {
+    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp || !crate::backends::manages_tabby(c) {
+        progresso("Verificando conexão com o backend externo...");
+        crate::backends::check(c)?;
+        progresso("Backend conectado. O ORDIS não gerencia esse processo.");
+        return Ok(());
+    }
     com_trava(c, false, || {
         let mut estado = ler_estado(c);
         let mut sys = System::new();

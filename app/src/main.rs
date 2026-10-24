@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agente;
+mod backends;
 mod controle;
 mod ferramentas;
 mod imagens;
@@ -251,6 +252,29 @@ async fn modelos_opcoes(c: State<'_, Ctx>) -> Result<Value, String> {
     em_segundo_plano(move || Ok(modelos::opcoes(&c.caminhos))).await
 }
 
+#[tauri::command]
+fn inference_backend_config(c: State<'_, Ctx>) -> backends::BackendSettings {
+    backends::settings(&c.caminhos)
+}
+
+#[tauri::command]
+fn inference_backend_save(
+    c: State<'_, Ctx>,
+    settings: backends::BackendSettings,
+    api_key: Option<String>,
+) -> Result<(), String> {
+    if c.resposta.lock().unwrap().is_some() || c.imagem.lock().unwrap().is_some() {
+        return Err("Interrompa a geração atual antes de trocar o backend.".into());
+    }
+    backends::save(&c.caminhos, settings, api_key)
+}
+
+#[tauri::command]
+async fn inference_backend_test(c: State<'_, Ctx>) -> Result<backends::BackendStatus, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || backends::check(&c.caminhos)).await
+}
+
 /// Grava a configuração dos modelos. Se o modelo de conversa mudou e o Tabby
 /// estava ligado, reinicia para valer na hora; desligado, vale na próxima carga.
 #[tauri::command]
@@ -268,7 +292,8 @@ async fn modelos_salvar(
         return Err("Há uma imagem sendo gerada. Aguarde ou cancele antes de trocar o modelo.".into());
     }
     em_segundo_plano(move || {
-        let ligado = controle::painel(&c.caminhos).servicos.iter().any(|s| s.nome == "inferencia" && s.situacao != "desligado");
+        let ligado = backends::active_kind(&c.caminhos) == backends::BackendKind::Tabbyapi
+            && controle::painel(&c.caminhos).servicos.iter().any(|s| s.nome == "inferencia" && s.situacao != "desligado");
         let mudou = modelos::salvar(&c.caminhos, &conversa, &imagem)?;
         let reiniciar = mudou && ligado;
         if reiniciar {
@@ -361,6 +386,9 @@ fn main() {
             proxmox_salvar,
             proxmox_testar,
             modelos_opcoes,
+            inference_backend_config,
+            inference_backend_save,
+            inference_backend_test,
             modelos_salvar,
             modelos_testar_conversa,
             modelos_importar_fluxo,

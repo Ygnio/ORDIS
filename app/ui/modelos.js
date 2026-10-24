@@ -136,6 +136,74 @@
     else preencherFormulario(opcoes.conversa, opcoes.imagem);
   }
 
+  let backendUrls = { tabbyapi: 'http://127.0.0.1:5000', llama_cpp: 'http://127.0.0.1:8080' };
+
+  function atualizarBackendVisibilidade() {
+    const llama = $('backend-tipo').value === 'llama_cpp';
+    $('backend-url').value = backendUrls[llama ? 'llama_cpp' : 'tabbyapi'];
+    $('backend-url-label').textContent = llama ? 'Endereço do llama.cpp' : 'Endereço do TabbyAPI';
+    $('backend-url').placeholder = llama ? 'http://127.0.0.1:8080' : 'http://127.0.0.1:5000';
+    $('backend-key-bloco').hidden = !llama;
+    $('backend-nota').textContent = llama
+      ? 'Conexão externa: o ORDIS nunca inicia, encerra ou reinicia o processo llama.cpp.'
+      : 'TabbyAPI continua sendo iniciado e encerrado pelo painel do ORDIS.';
+  }
+
+  function mostrarBackend(s) {
+    const caps = s.capabilities || {};
+    const raciocinio = caps.reasoning == null ? 'não anunciado' : caps.reasoning ? 'sim' : 'não';
+    const partes = [
+      s.connected ? 'Conectado' : 'Desconectado',
+      s.model ? `modelo: ${s.model}` : '',
+      `stream: ${caps.streaming ? 'sim' : 'não'}`,
+      `ferramentas: ${caps.tools ? 'API disponível (depende do template)' : 'não'}`,
+      `raciocínio separado: ${raciocinio}`,
+      `entrada de imagem: ${caps.image_input ? 'sim' : 'não'}`,
+      `métricas: ${caps.metrics ? 'sim' : 'não'}`,
+    ].filter(Boolean);
+    $('backend-status').textContent = s.error || partes.join(' · ');
+  }
+
+  async function carregarBackend() {
+    const s = await invoke('inference_backend_config');
+    backendUrls = { tabbyapi: s.tabby_url, llama_cpp: s.llama_url };
+    $('backend-tipo').value = s.selected;
+    atualizarBackendVisibilidade();
+    $('backend-key').value = '';
+    try { mostrarBackend(await invoke('inference_backend_test')); }
+    catch (e) { $('backend-status').textContent = String(e); }
+  }
+
+  async function testarBackend() {
+    $('backend-testar').disabled = true;
+    $('backend-status').textContent = 'Testando conexão…';
+    try { mostrarBackend(await invoke('inference_backend_test')); }
+    catch (e) { $('backend-status').textContent = String(e); }
+    finally { $('backend-testar').disabled = false; }
+  }
+
+  async function salvarBackend() {
+    $('backend-salvar').disabled = true;
+    $('backend-testar').disabled = true;
+    $('backend-status').textContent = 'Salvando e testando…';
+    try {
+      backendUrls[$('backend-tipo').value] = $('backend-url').value;
+      await invoke('inference_backend_save', {
+        settings: { selected: $('backend-tipo').value, ...backendUrls },
+        apiKey: $('backend-key').value || null,
+      });
+      $('backend-key').value = '';
+      mostrarBackend(await invoke('inference_backend_test'));
+      avisar('Backend salvo e conexão testada.');
+    } catch (e) {
+      $('backend-status').textContent = String(e);
+      avisar(String(e), true);
+    } finally {
+      $('backend-salvar').disabled = false;
+      $('backend-testar').disabled = false;
+    }
+  }
+
   function definirOcupado(sim, texto = '') {
     ocupado = sim;
     $('mo-estado').textContent = texto;
@@ -278,7 +346,24 @@
   });
   $('mo-testar-conversa').addEventListener('click', testarConversa);
   $('mo-testar-imagem').addEventListener('click', testarImagem);
+  $('backend-tipo').addEventListener('change', () => {
+    backendUrls[$('backend-tipo').value === 'llama_cpp' ? 'tabbyapi' : 'llama_cpp'] = $('backend-url').value;
+    atualizarBackendVisibilidade();
+  });
+  $('backend-salvar').addEventListener('click', salvarBackend);
+  $('backend-testar').addEventListener('click', testarBackend);
+  $('backend-key-remover').addEventListener('click', async () => {
+    try {
+      const s = await invoke('inference_backend_config');
+      await invoke('inference_backend_save', { settings: s, apiKey: '' });
+      $('backend-key').value = '';
+      avisar('Chave salva removida.');
+    } catch (e) { avisar(String(e), true); }
+  });
   window.addEventListener('aba', (e) => {
-    if (e.detail === 'config' && !ocupado) carregar(false).catch((err) => avisar(String(err), true));
+    if (e.detail === 'config' && !ocupado) {
+      carregar(false).catch((err) => avisar(String(err), true));
+      carregarBackend().catch((err) => { $('backend-status').textContent = String(err); });
+    }
   });
 })();
