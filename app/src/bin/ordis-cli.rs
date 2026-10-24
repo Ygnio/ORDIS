@@ -7,6 +7,8 @@
 mod agente;
 #[path = "../benchmark.rs"]
 mod benchmark;
+#[path = "../backends.rs"]
+mod backends;
 #[path = "../controle.rs"]
 mod controle;
 #[path = "../ferramentas.rs"]
