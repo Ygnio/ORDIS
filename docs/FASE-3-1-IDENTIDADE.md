@@ -4,7 +4,7 @@
 
 Esta alteração depende dos PRs #3 (memória) e #4 (métricas) do fork Ygnio/ORDIS. Sua branch parte de feature/response-metrics. Não altera processos TabbyAPI, llama.cpp ou ComfyUI, nem aprova merges.
 
-A identidade anterior estava na primeira frase de agente/workspace/AGENTS.md. O prompt era montado em app/src/agente.rs e incluía também AGENTS.local.md. Agora o arquivo público descreve regras do aplicativo ORDIS; o perfil privado fornece o nome Lucille por padrão. A frase padrão antiga é normalizada somente em memória durante a montagem do contexto, inclusive em instalações que já copiaram o template antigo. Nomes do aplicativo, binários, ferramentas e backends permanecem ORDIS quando apropriado.
+A identidade anterior estava na primeira frase de agente/workspace/AGENTS.md. O prompt era montado em app/src/agente.rs e incluía também AGENTS.local.md. Agora o arquivo público descreve regras do aplicativo ORDIS; o perfil privado fornece o nome Lucille por padrão. A frase padrão antiga é normalizada somente em memória durante a montagem do contexto, inclusive em instalações que já copiaram o template antigo. Nomes do aplicativo, binários, ferramentas e backends permanecem ORDIS quando apropriado. O benchmark sintético também usa Lucille, sem carregar perfis privados, para preservar a repetibilidade e privacidade da avaliação.
 
 Configurações > Lucille permite editar nome, descrição, personalidade e instruções permanentes. O perfil é salvo explicitamente na tabela identity_profile do banco privado. Cada solicitação, inclusive uma nova conversa ou após reinicialização, carrega o perfil persistente. Falhas de leitura não substituem silenciosamente um perfil existente pelo padrão.
 

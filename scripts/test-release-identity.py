@@ -130,7 +130,7 @@ def run(package, metrics=True):
         assert 'Nome: Lucille' in first_system
         assert 'Seja breve e gentil' in first_system
         assert 'Você é ORDIS, assistente técnico local do usuário.' not in first_system
-        assert not any('lucille_memory_data' in str(m.get('content', '')) for m in requests[-1]['messages'])
+        assert not any(m.get('role') == 'user' and str(m.get('content', '')).startswith('<lucille_memory_data>') for m in requests[-1]['messages'])
         db_path = fixture / 'runtime/memory/lucille.sqlite3'
         assert db_path.is_file()
         with closing(sqlite3.connect(db_path)) as db:
@@ -144,10 +144,10 @@ def run(package, metrics=True):
         assert 'Nome: Aurora Sintética' in requests[-1]['messages'][0]['content']
         assert 'Instrução fictícia permanente' in requests[-1]['messages'][0]['content']
         assert all('_lucille_ids' not in m for m in requests[-1]['messages'])
-        assert any('lucille_memory_data' in str(m.get('content', '')) and 'Atlas' in str(m.get('content', '')) for m in requests[-1]['messages'])
+        assert any(m.get('role') == 'user' and str(m.get('content', '')).startswith('<lucille_memory_data>') and 'Atlas' in str(m.get('content', '')) for m in requests[-1]['messages'])
         select('tabbyapi')  # External mock endpoint; never manage a real Tabby process.
         ask('Relembre Atlas Rust.')
-        assert any('lucille_memory_data' in str(m.get('content', '')) for m in requests[-1]['messages'])
+        assert any(m.get('role') == 'user' and str(m.get('content', '')).startswith('<lucille_memory_data>') for m in requests[-1]['messages'])
         assert legacy.read_bytes() == legacy_bytes
         assert private_prompt.read_bytes() == private_bytes
         assert len(requests) == 3
