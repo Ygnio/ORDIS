@@ -72,7 +72,8 @@ window.ordis = {
   // está ligado (geração iniciada pelo terminal, por exemplo).
   emTroca(p) {
     if (backendAtual?.externally_managed || backendAtual?.backend === 'llama_cpp') return false;
-    return trocando || !!(p && p.servicos.some((s) => s.nome === 'imagens' && s.situacao !== 'desligado'));
+    const imagens = p?.servicos.find((service) => service.nome === 'imagens');
+    return imagens?.managed !== false && (trocando || !!(imagens && imagens.situacao !== 'desligado'));
   },
   definirTroca(sim) {
     trocando = sim;

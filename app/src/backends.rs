@@ -427,7 +427,7 @@ pub fn check(c: &Caminhos) -> Result<BackendStatus, String> {
                     image_input_configured: Some(m.visao),
                     image_input_advertised: None,
                     image_input: m.visao,
-                    metrics: c.runtime.join("token-metrics.json").is_file(),
+                    metrics: manages_tabby(c) && c.runtime.join("token-metrics.json").is_file(),
                 },
                 error: None,
             })

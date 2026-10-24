@@ -234,10 +234,11 @@ pub fn painel(c: &Caminhos) -> Painel {
             }
         })
         .collect();
-    let tokens = (crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi)
-        .then(|| fs::read_to_string(c.runtime.join("token-metrics.json")))
-        .and_then(Result::ok)
-        .and_then(|t| serde_json::from_str(t.trim()).ok());
+    let tokens = (crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi
+        && crate::backends::manages_tabby(c))
+    .then(|| fs::read_to_string(c.runtime.join("token-metrics.json")))
+    .and_then(Result::ok)
+    .and_then(|t| serde_json::from_str(t.trim()).ok());
     Painel {
         servicos,
         vram: vram(),
