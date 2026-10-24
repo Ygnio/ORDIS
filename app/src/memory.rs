@@ -89,7 +89,10 @@ pub fn database_path(c: &Caminhos) -> Result<PathBuf, String> {
             let local_actual = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
                 .canonicalize()
                 .map_err(|_| "Pasta privada indisponível.")?;
-            if !actual.starts_with(local_actual) {
+            let expected_private = local_actual.join("Lucille");
+            if !actual.starts_with(&local_actual)
+                || (ancestor.starts_with(&root) && !actual.starts_with(&expected_private))
+            {
                 return Err("A pasta de memória aponta para fora do armazenamento privado.".into());
             }
             break;
@@ -260,7 +263,7 @@ impl Store {
         source: Option<(&str, i64)>,
     ) -> Result<i64, String> {
         validate(m)?;
-        let tx = self.db.transaction().map_err(error)?;
+        let tx = self.db.savepoint().map_err(error)?;
         let fp = fingerprint(&m.content);
         let duplicate:Option<i64>=tx.query_row("SELECT id FROM memories WHERE fingerprint=?1 AND kind=?2 AND project_id IS ?3 AND (?4 IS NULL OR id<>?4) LIMIT 1",params![fp,m.kind,m.project_id,id],|r|r.get(0)).optional().map_err(error)?;
         if id.is_some() && duplicate.is_some() {
@@ -351,30 +354,45 @@ impl Store {
         if p.name.trim().is_empty() || text.len() > 8000 || has_secret(&text) {
             return Err("Projeto vazio, acima de 8000 bytes ou com possível segredo.".into());
         }
-        let tx = self.db.transaction().map_err(error)?;
-        tx.execute("INSERT INTO projects(id,name,goal,repository,branch,files,architecture,issues,solutions,tests,next_tasks,execution_state,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(id) DO UPDATE SET name=excluded.name,goal=excluded.goal,repository=excluded.repository,branch=excluded.branch,files=excluded.files,architecture=excluded.architecture,issues=excluded.issues,solutions=excluded.solutions,tests=excluded.tests,next_tasks=excluded.next_tasks,execution_state=excluded.execution_state,updated_at=excluded.updated_at",params![p.id,p.name,p.goal,p.repository,p.branch,p.files,p.architecture,p.issues,p.solutions,p.tests,p.next_tasks,p.execution_state,now()]).map_err(error)?;
-        let id = p.id.unwrap_or(tx.last_insert_rowid());
-        // The project is searchable as contextual data, never an executable workspace.
-        tx.commit().map_err(error)?;
-        let input = Input {
-            kind: "project".into(),
-            content: text,
-            project_id: Some(id),
-            fact_key: format!("project:{id}"),
-            state: "active".into(),
-            importance: 4,
-        };
-        let old: Option<i64> = self
-            .db
-            .query_row(
-                "SELECT id FROM memories WHERE fact_key=?1 AND project_id=?2",
-                params![input.fact_key, id],
-                |r| r.get(0),
-            )
-            .optional()
+        self.db
+            .execute_batch("SAVEPOINT project_edit")
             .map_err(error)?;
-        self.put(old, &input, "manual", None)?;
-        Ok(id)
+        let result = (|| {
+            let tx = self.db.savepoint().map_err(error)?;
+            tx.execute("INSERT INTO projects(id,name,goal,repository,branch,files,architecture,issues,solutions,tests,next_tasks,execution_state,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(id) DO UPDATE SET name=excluded.name,goal=excluded.goal,repository=excluded.repository,branch=excluded.branch,files=excluded.files,architecture=excluded.architecture,issues=excluded.issues,solutions=excluded.solutions,tests=excluded.tests,next_tasks=excluded.next_tasks,execution_state=excluded.execution_state,updated_at=excluded.updated_at",params![p.id,p.name,p.goal,p.repository,p.branch,p.files,p.architecture,p.issues,p.solutions,p.tests,p.next_tasks,p.execution_state,now()]).map_err(error)?;
+            let id = p.id.unwrap_or(tx.last_insert_rowid());
+            // The project is searchable as contextual data, never an executable workspace.
+            tx.commit().map_err(error)?;
+            let input = Input {
+                kind: "project".into(),
+                content: text,
+                project_id: Some(id),
+                fact_key: format!("project:{id}"),
+                state: "active".into(),
+                importance: 4,
+            };
+            let old: Option<i64> = self
+                .db
+                .query_row(
+                    "SELECT id FROM memories WHERE fact_key=?1 AND project_id=?2",
+                    params![input.fact_key, id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(error)?;
+            self.put(old, &input, "manual", None)?;
+            Ok(id)
+        })();
+        if result.is_ok() {
+            self.db
+                .execute_batch("RELEASE project_edit")
+                .map_err(error)?;
+        } else {
+            self.db
+                .execute_batch("ROLLBACK TO project_edit; RELEASE project_edit;")
+                .map_err(error)?;
+        }
+        result
     }
     fn record(
         &mut self,
@@ -708,6 +726,9 @@ pub fn has_secret(text: &str) -> bool {
         "github_pat_",
         "sk-proj-",
         "sk-ant-",
+        "sk-",
+        "client_secret",
+        "token ",
         "-----begin",
     ]
     .iter()

@@ -411,3 +411,35 @@ fn toggles_independent_and_consolidation_idempotent_preserves_sources() {
     assert!(!s.list("", None, "preference", "").unwrap().is_empty());
     assert!(s.retrieve("SQLite", "synthetic").unwrap().is_none());
 }
+
+#[test]
+fn export_is_consistent_and_not_limited_to_ui_page() {
+    let mut s = Fixture::new();
+    for n in 0..205 {
+        s.put(
+            None,
+            &input(&format!("Fato sintético número {n}")),
+            "manual",
+            None,
+        )
+        .unwrap();
+    }
+    assert_eq!(s.list("", None, "", "").unwrap().len(), 200);
+    let path = s.export().unwrap();
+    let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(value["tables"]["memories"].as_array().unwrap().len(), 205);
+    assert_eq!(value["tables"]["sources"].as_array().unwrap().len(), 205);
+}
+
+#[test]
+fn project_update_rolls_back_if_index_write_fails() {
+    let mut s = Fixture::new();
+    s.db.execute_batch("CREATE TRIGGER synthetic_failure BEFORE INSERT ON memories BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+    assert!(s
+        .project_put(&Project {
+            name: "Synthetic rollback".into(),
+            ..Default::default()
+        })
+        .is_err());
+    assert!(s.projects().unwrap().is_empty());
+}
