@@ -15,6 +15,8 @@ mod controle;
 mod diagnostics;
 #[path = "../ferramentas.rs"]
 mod ferramentas;
+#[path = "../identity.rs"]
+mod identity;
 #[path = "../imagens.rs"]
 mod imagens;
 #[path = "../memory.rs"]

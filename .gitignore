@@ -1,5 +1,12 @@
 # Segredos e configuração local
 .env
+identity.json
+identity-profile.json
+personality.private.md
+system-prompt.private.*
+profiles/
+prompts-private/
+exports/
 .env.*
 !.env.example
 secrets/

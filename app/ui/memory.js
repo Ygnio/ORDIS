@@ -34,6 +34,15 @@ if (typeof window !== 'undefined') (() => {
     for (const id of ['state','filter-state']) select(get(id), data.states.map(k => [k, labels[k]]), id === 'filter-state' ? 'Todos os estados' : null);
     const o = data.options; get('retrieval').checked = o.retrieval; get('extraction').checked = o.extraction; get('budget').value = o.token_budget; get('active-project').value = o.project_id ?? '';
     const s = data.stats; get('stats').textContent = `Banco: ${s.path}\nSchema ${s.schema} · ${s.memories} memórias · ${s.messages} mensagens novas · ${s.projects} projetos\nSQLite: ${s.database_bytes} bytes + WAL ${s.wal_bytes} bytes · cache configurado: ${s.cache_kib} KiB · auditorias: ${s.retrievals}`;
+    const d=await call('dashboard');
+    get('overview').textContent=`${d.states.active} confirmadas podem fornecer contexto; ${d.states.candidate} candidatos aguardam sua aprovação; ${d.states.conflict} contradições ficam fora da recuperação; ${d.states.obsolete} obsoletas estão desativadas. Identidade permanente é editada em Configurações.`;
+    get('confirmed').textContent=`Confirmadas (${d.states.active})`;get('candidates').textContent=`Aguardando revisão (${d.states.candidate})`;get('conflicts').textContent=`Contradições (${d.states.conflict})`;
+    const recent=get('recent');recent.replaceChildren();
+    if(!d.recent.length)recent.textContent='Nenhuma recuperação registrada. Aprove uma preferência e inicie outra conversa com recuperação habilitada.';
+    for(const r of d.recent){const p=document.createElement('p');p.textContent=`${new Date(r.date*1000).toLocaleString()} · ${r.ids.length ? r.ids.map(id=>'#'+id).join(', ') : 'Nenhuma memória selecionada'} · ${r.tokens} tokens estimados`;recent.append(p);}
+    const states={idle:'Ainda não executada',running:'Em execução',interrupted:'Interrompida; pode retomar',completed:'Último lote concluído',error:'Último lote falhou; fontes preservadas'};
+    get('consolidation-state').textContent=`${(d.maintenance.state==='running'&&!d.running?'Execução anterior interrompida; pode retomar':states[d.maintenance.state])||d.maintenance.state} · ${d.maintenance.processed} lotes processados · ${d.pending_messages} mensagens aguardando consolidação. Resumos e decisões extraídos exigem revisão.`;
+    get('project-summary').textContent=projects.length ? projects.map(p=>`${p.name}: ${p.execution_state||'estado não informado'}; próxima tarefa: ${p.next_tasks||'não informada'}`).join(' | ') : 'Nenhum projeto cadastrado. Cadastre objetivo e tarefas de retomada abaixo.';
     loaded = true; await search();
   }
   function editor(m = null) {
@@ -54,6 +63,7 @@ if (typeof window !== 'undefined') (() => {
       const del = document.createElement('button'); del.textContent = 'Excluir'; del.onclick = async () => { if (!window.confirm(`Excluir memória #${m.id}? Fontes JSON e backups existentes permanecerão.`)) return; try { await call('delete',{id:m.id}); await refresh(); message('Memória excluída.'); } catch(e) { message(String(e)); } }; article.append(del); list.append(article);
     }
   }
+  for(const [id,state] of [['confirmed','active'],['candidates','candidate'],['conflicts','conflict']])bind(id,async()=>{get('filter-state').value=state;await search();});
   bind('search',search); bind('new',() => editor()); bind('close',() => {get('form').hidden = true;});
   bind('options',async () => { await call('options',MemoryUI.options(get('retrieval').checked,get('extraction').checked,get('budget').value,get('active-project').value)); message('Opções salvas.'); await refresh(); });
   get('form').addEventListener('submit',async e => { e.preventDefault(); try { const memory = {kind:get('kind').value,content:get('content').value,project_id:MemoryUI.nullableId(get('project').value),fact_key:get('key').value,state:get('state').value,importance:Number(get('importance').value)}; await call('save',{id:editing,memory}); get('form').hidden = true; await refresh(); message('Memória salva. Confira o estado após a detecção de contradições.'); } catch(err) { message(String(err)); } });
@@ -64,7 +74,7 @@ if (typeof window !== 'undefined') (() => {
   }
   bind('project-new',() => projectEditor()); bind('project-load',() => {const p=projects.find(p => p.id === Number(get('project-edit').value)); if(p) projectEditor(p);});
   get('project-form').addEventListener('submit',async e => {e.preventDefault(); try { const p={id:projectId}; for(const k of Object.keys(projectLabels)) p[k]=document.getElementById(`mem-p-${k}`).value; await call('project_save',p); get('project-form').hidden=true; await refresh(); message('Projeto salvo como referência local.'); } catch(err) {message(String(err));} });
-  bind('consolidate',async () => {get('consolidate').disabled = true; try { const r=await call('consolidate'); await refresh(); message(`${r.processed} conversas consolidadas${r.interrupted ? ' · interrompido' : ''}. Revise os candidatos.`); } finally {get('consolidate').disabled = false;} });
+  bind('consolidate',async () => {get('consolidate').disabled = true; try { const r=await call('consolidate'); await refresh(); message(`${r.processed} lotes consolidados${r.interrupted ? ' · interrompido' : ''}. Revise os candidatos.`); } finally {get('consolidate').disabled = false;} });
   bind('stop',async () => {await invoke('memory_stop');message('Interrupção solicitada; o lote atual será concluído.');});
   async function backups() {select(get('backup-list'),(await call('backups')).map(x => [x,x]),'Selecione um backup');}
   bind('backups-refresh',backups);

@@ -171,6 +171,12 @@
     <main id="vista-memoria" class="vista config" hidden>
       <h1>Memória</h1>
       <p class="sutil">Armazenamento privado local. Candidatos e conflitos precisam de revisão; apenas memórias ativas são recuperadas. O contexto selecionado é enviado ao backend de conversa configurado.</p>
+      <section class="secao cartao mem-controls"><h2 class="mem-wide">Estado da memória</h2>
+        <button id="mem-confirmed">Confirmadas</button><button id="mem-candidates">Aguardando revisão</button><button id="mem-conflicts">Contradições</button>
+        <p id="mem-overview" class="mem-wide" role="status"></p>
+        <h3 class="mem-wide">Memórias recuperadas recentemente</h3><div id="mem-recent" class="mem-wide"></div>
+        <h3 class="mem-wide">Consolidação</h3><p id="mem-consolidation-state" class="mem-wide"></p>
+      </section>
       <p id="mem-status" role="status" aria-live="polite"></p>
       <section class="secao cartao mem-controls">
         <label><input type="checkbox" id="mem-retrieval"> Recuperação automática</label>
@@ -206,13 +212,14 @@
       </section>
       <section class="secao">
         <h2>Projetos e retomada de tarefas</h2>
+        <p id="mem-project-summary" class="sutil"></p>
         <select id="mem-project-edit" aria-label="Selecionar projeto para editar"></select>
         <button id="mem-project-load">Editar projeto</button><button id="mem-project-new">Novo projeto</button>
         <form id="mem-project-form" class="cartao mem-controls" hidden><div id="mem-project-fields" class="mem-wide"></div><button type="submit">Salvar projeto</button></form>
       </section>
       <section class="secao cartao mem-controls">
         <h2 class="mem-wide">Consolidação e cópias locais</h2>
-        <p class="sutil mem-wide">Consolidação manual em lotes de até 20 conversas: trechos literais do usuário viram candidatos, mantendo as fontes. Nenhum modelo é iniciado. Backups contêm dados privados: guarde-os fora do GitHub. A restauração só afeta SQLite; históricos JSON permanecem intactos.</p>
+        <p class="sutil mem-wide">Consolidação manual em até 20 lotes de 20 mensagens: trechos literais do usuário viram candidatos, mantendo as fontes. Nenhum modelo é iniciado. Backups contêm dados privados: guarde-os fora do GitHub. A restauração só afeta SQLite; históricos JSON permanecem intactos.</p>
         <button id="mem-consolidate">Consolidar lote</button><button id="mem-stop">Interromper consolidação</button>
         <button id="mem-export">Exportar JSON local</button><button id="mem-backup">Criar backup SQLite</button>
         <button id="mem-backups-refresh">Listar backups</button><select id="mem-backup-list" aria-label="Backup local"></select><button id="mem-restore">Validar e restaurar</button>
@@ -220,6 +227,18 @@
     </main>
     <main id="vista-config" class="vista config" hidden>
       <h1>Configurações</h1>
+      <section class="secao"><h2>Lucille — identidade permanente</h2>
+        <p class="sutil">Este perfil é privado e só muda ao salvar aqui. Memórias e mensagens não alteram automaticamente sua identidade. ORDIS continua sendo o nome do aplicativo.</p>
+        <form id="identity-form" class="cartao mem-controls">
+          <label>Nome da assistente <input id="identity-name" maxlength="80" required></label>
+          <label class="mem-wide">Descrição <textarea id="identity-description" rows="2"></textarea></label>
+          <label class="mem-wide">Personalidade <textarea id="identity-personality" rows="3"></textarea></label>
+          <label class="mem-wide">Instruções permanentes <textarea id="identity-instructions" rows="5"></textarea></label>
+          <p class="sutil">Não inclua credenciais. Arquivos personalizados existentes não são sobrescritos. Perfis legados são mostrados para revisão antes de salvar.</p>
+          <button type="submit">Salvar identidade</button><p id="identity-status" role="status"></p>
+        </form>
+      </section>
+
 
       <section class="secao">
         <h2>Aparência</h2>
@@ -456,5 +475,6 @@
   <script src="modelos.js"></script>
   <script src="hardware-settings.js"></script>
   <script src="memory.js"></script>
+  <script src="identity.js"></script>
 </body>
 </html>
