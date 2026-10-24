@@ -20,3 +20,24 @@ test('model settings stay specific to TabbyAPI and missing facts remain unknown'
   assert.equal(status.knownOrUnknown(null), 'desconhecido');
   assert.equal(status.knownOrUnknown(false), 'não');
 });
+
+test('external llama.cpp is never presented as a service ORDIS can stop', () => {
+  const llamaAndComfy = [
+    { nome: 'inferencia', situacao: 'pronto' },
+    { nome: 'imagens', situacao: 'pronto' },
+  ];
+  assert.deepEqual(status.serviceControl('llama_cpp', llamaAndComfy), {
+    active: true,
+    enabled: true,
+    label: 'Desligar serviços do ORDIS',
+    summary: 'llama.cpp externo conectado · ComfyUI ligado. O ORDIS não controla o processo llama.cpp.',
+    action: 'stop',
+    stoppedNotice: 'Serviços do ORDIS encerrados. llama.cpp externo continua ativo.',
+    busyLabel: 'Encerrando serviços do ORDIS…',
+  });
+
+  const llamaOnly = status.serviceControl('llama_cpp', [llamaAndComfy[0], { nome: 'imagens', situacao: 'desligado' }]);
+  assert.equal(llamaOnly.enabled, false);
+  assert.equal(llamaOnly.action, 'none');
+  assert.match(llamaOnly.summary, /continua|não controla/);
+});

@@ -19,5 +19,24 @@
     return value == null ? 'desconhecido' : value ? 'sim' : 'não';
   }
 
-  return { footer, tabbySettingsVisible, knownOrUnknown };
+  function serviceControl(backend, services) {
+    const external = backend === 'llama_cpp';
+    const managed = (services || []).filter((service) =>
+      external ? service.nome === 'imagens' : service.nome === 'inferencia' || service.nome === 'imagens',
+    );
+    const active = managed.some((service) => service.situacao !== 'desligado');
+    return {
+      active,
+      enabled: external ? active : true,
+      label: external ? (active ? 'Desligar serviços do ORDIS' : 'llama.cpp externo') : (active ? 'Desligar' : 'Iniciar'),
+      summary: external
+        ? `llama.cpp externo ${services?.some((service) => service.nome === 'inferencia' && service.situacao === 'pronto') ? 'conectado' : 'desconectado'}${services?.some((service) => service.nome === 'imagens' && service.situacao !== 'desligado') ? ' · ComfyUI ligado' : ''}. O ORDIS não controla o processo llama.cpp.`
+        : null,
+      action: external ? (active ? 'stop' : 'none') : (active ? 'stop' : 'start'),
+      stoppedNotice: external ? 'Serviços do ORDIS encerrados. llama.cpp externo continua ativo.' : 'ORDIS desligado. GPU livre.',
+      busyLabel: external ? 'Encerrando serviços do ORDIS…' : (active ? 'Desligando o ORDIS…' : 'Iniciando o ORDIS…'),
+    };
+  }
+
+  return { footer, tabbySettingsVisible, knownOrUnknown, serviceControl };
 });
