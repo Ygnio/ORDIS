@@ -525,9 +525,9 @@ mod status_tests {
 
     #[test]
     fn session_status_reports_effective_tabby_model_and_settings() {
-        let s = status(BackendKind::Tabbyapi, "Qwen3.8-27B-exl3-3.0bpw", Some(32_768));
+        let s = status(BackendKind::Tabbyapi, "tabby-model", Some(32_768));
         let value = status_sessao_json("tabbyapi", Some("http://127.0.0.1:5000"), Some(&s), 120);
-        assert_eq!(value["modelo"], "Qwen3.8-27B-exl3-3.0bpw");
+        assert_eq!(value["modelo"], "tabby-model");
         assert_eq!(value["contexto_tokens"], 32_768);
         assert_eq!(value["resposta_max_tokens"], 4096);
         assert_eq!(value["conectado"], true);
