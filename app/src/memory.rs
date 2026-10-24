@@ -888,12 +888,24 @@ pub fn record(
     role: &str,
     text: &str,
 ) -> Result<(), String> {
-    with_store(c, |s| {
+    with_chat_store(c, |s| {
         s.record(conversation, title, ordinal as i64, role, text)
     })
 }
 pub fn retrieve(c: &Caminhos, query: &str, conversation: &str) -> Result<Option<Value>, String> {
-    with_store(c, |s| s.retrieve(query, conversation))
+    with_chat_store(c, |s| s.retrieve(query, conversation))
+}
+
+/// Maintenance must never queue a chat behind a backup/export/consolidation.
+fn with_chat_store<T>(
+    c: &Caminhos,
+    f: impl FnOnce(&mut Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = ACCESS
+        .try_lock()
+        .map_err(|_| "Memória ocupada por manutenção; o histórico JSON permanece disponível.")?;
+    let mut store = Store::open(&database_path(c)?)?;
+    f(&mut store)
 }
 
 /// One allowlisted UI API. No arbitrary SQL, filesystem paths, HTTP, Git or shell operations.

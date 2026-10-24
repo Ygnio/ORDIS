@@ -497,3 +497,16 @@ fn reopening_conversation_keeps_project_after_default_changes() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn chat_does_not_wait_behind_database_maintenance() {
+    let _maintenance = ACCESS.lock().unwrap();
+    let c = Caminhos {
+        projeto: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        runtime: PathBuf::from("unused-synthetic"),
+    };
+    let r: Result<(), String> = with_chat_store(&c, |_| {
+        panic!("Busy chat must not open a database or execute work")
+    });
+    assert!(r.unwrap_err().contains("manutenção"));
+}

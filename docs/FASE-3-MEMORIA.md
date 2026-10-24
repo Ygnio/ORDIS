@@ -19,6 +19,7 @@ Backups ficam em `memory\backups`, exportações em `memory\exports`, junto do b
 - Migração 002: índice FTS5 com normalização de acentos e triggers de inserção, atualização e exclusão.
 - Migrações usam transação e `PRAGMA user_version`; versões futuras são recusadas. Fontes são preservadas; o histórico de alterações registra identificadores, ação e data, sem copiar o conteúdo excluído.
 - WAL, sincronização FULL, chaves estrangeiras, timeout de contenção de 100 ms e cache de 2 MiB. A conexão é curta e as operações locais são serializadas. Falhas de memória não interrompem a resposta do backend.
+- Se manutenção/exportação/backup já estiver usando o banco, o chat não aguarda esse trabalho: avisa e continua com JSON, sem recuperar ou extrair naquele turno. Não há importação automática posterior do JSON omitido; repita a declaração ou crie a memória manualmente se necessário.
 
 O histórico JSON permanece no local existente, sem importação, migração ou exclusão automática. Apenas novas mensagens de usuário e texto final da assistente são espelhados no SQLite. Raciocínio, imagens e resultados de ferramentas não são copiados. Mensagens com possíveis segredos ou acima de 64 KiB são omitidas do novo espelho. O JSON original segue sua política anterior, portanto pode conter conteúdo sensível digitado pelo usuário.
 
