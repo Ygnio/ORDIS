@@ -6,6 +6,7 @@ mod controle;
 mod diagnostics;
 mod ferramentas;
 mod imagens;
+mod memory;
 mod modelos;
 mod proxmox;
 mod settings;
@@ -436,6 +437,17 @@ async fn proxmox_testar(c: State<'_, Ctx>) -> Result<Value, String> {
     em_segundo_plano(move || proxmox::testar(&c.caminhos)).await
 }
 
+#[tauri::command]
+async fn memory_action(c: State<'_, Ctx>, action: String, args: Value) -> Result<Value, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || memory::action(&c.caminhos, &action, args)).await
+}
+
+#[tauri::command]
+fn memory_stop() {
+    memory::STOP_CONSOLIDATION.store(true, Ordering::Relaxed);
+}
+
 fn main() {
     let caminhos = match Caminhos::descobrir() {
         Ok(c) => c,
@@ -452,6 +464,8 @@ fn main() {
         }))
         .invoke_handler(tauri::generate_handler![
             painel,
+            memory_action,
+            memory_stop,
             hardware_diagnostics,
             local_settings,
             local_settings_save,

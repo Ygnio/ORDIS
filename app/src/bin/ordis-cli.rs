@@ -17,6 +17,8 @@ mod diagnostics;
 mod ferramentas;
 #[path = "../imagens.rs"]
 mod imagens;
+#[path = "../memory.rs"]
+mod memory;
 #[path = "../modelos.rs"]
 mod modelos;
 #[path = "../proxmox.rs"]

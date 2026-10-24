@@ -71,7 +71,7 @@ jobs:
       - name: Check formatting of changed Rust modules
         shell: pwsh
         run: |
-          rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --config skip_children=true --check app/src/backends.rs app/src/settings.rs app/src/diagnostics.rs app/src/controle.rs app/src/ferramentas.rs app/src/imagens.rs app/src/main.rs app/src/modelos.rs app/src/bin/ordis-cli.rs
+          rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --config skip_children=true --check app/src/backends.rs app/src/settings.rs app/src/diagnostics.rs app/src/controle.rs app/src/ferramentas.rs app/src/imagens.rs app/src/main.rs app/src/modelos.rs app/src/bin/ordis-cli.rs app/src/agente.rs app/src/memory.rs app/src/memory_tests.rs
 
       - name: Check JavaScript syntax
         shell: pwsh
@@ -81,6 +81,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           node --test scripts/test-backend-ui.cjs
+          node --test scripts/test-memory-ui.cjs
 
       - name: Run Python tests
         shell: pwsh
@@ -124,7 +125,7 @@ jobs:
           Copy-Item config/paths.json, config/tabbyapi-inicial.yml, config/ordis_qwen_thinking.yml, config/runtime-packages.txt, config/images-requirements.lock.txt, config/README.md (Join-Path $stage 'config')
           Copy-Item scripts/serve_inference.py, scripts/service_shutdown.py, scripts/agent_web_search.py, scripts/ordis_token_monitor.py, scripts/token_counter_paths.py (Join-Path $stage 'scripts')
           Copy-Item agente/workspace/AGENTS.md (Join-Path $stage 'agente/workspace/AGENTS.md')
-          Copy-Item docs/LLAMA-CPP-GGUF.md, docs/TESTE-WINDOWS-LLAMA-CPP.md, docs/FASE-2-CONFIGURACOES.md (Join-Path $stage 'docs')
+          Copy-Item docs/LLAMA-CPP-GGUF.md, docs/TESTE-WINDOWS-LLAMA-CPP.md, docs/FASE-2-CONFIGURACOES.md, docs/FASE-3-MEMORIA.md (Join-Path $stage 'docs')
           Copy-Item scripts/Iniciar-ORDIS-Teste.ps1 (Join-Path $stage 'Iniciar-ORDIS-Teste.ps1')
           $forbidden = Get-ChildItem $stage -Recurse -File | Where-Object {
             $_.Extension -match '^\.(gguf|exl3|safetensors|dpapi|sqlite|sqlite3|db|wal|shm|pem|p12|pfx|key|log)$' -or
@@ -138,7 +139,7 @@ jobs:
       - name: Upload Windows test ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: ORDIS-Windows-Test-Fase-2
+          name: ORDIS-Windows-Test-Fase-3
           path: ${{ runner.temp }}/ORDIS-Windows-Test.zip
           if-no-files-found: error
           retention-days: 14

@@ -141,9 +141,9 @@ document.addEventListener('mousedown', () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && !e.shiftKey && !e.altKey && /^[1-4]$/.test(e.key)) {
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && /^[1-5]$/.test(e.key)) {
     e.preventDefault();
-    mostrarAba(['agente', 'imagens', 'painel', 'config'][Number(e.key) - 1]);
+    mostrarAba(['agente', 'imagens', 'painel', 'config', 'memoria'][Number(e.key) - 1]);
   }
   if (e.key === 'Escape') $('popover-servicos').hidden = true;
 });
