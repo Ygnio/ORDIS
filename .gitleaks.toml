@@ -1,0 +1,12 @@
+title = "ORDIS Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known generic-api-key false positive: public model identifier in a backend status fixture from commit ee331f3."
+condition = "AND"
+commits = ["ee331f3b744619d3f63807554013c1bacaddf132"]
+paths = ['''app/src/ferramentas\.rs$''']
+regexTarget = "line"
+regexes = ['''Qwen3\.8-27B-exl3-3\.0bpw''']

@@ -2,7 +2,7 @@
 
 Assistente local para Windows que roda inteiro na sua GPU: conversa com um modelo de linguagem com visão, pesquisa na web, lê arquivos, consulta um servidor Proxmox em modo somente leitura e gera imagens, sem depender de serviços na nuvem.
 
-É um único app em Rust + Tauri. O modelo de conversa é servido pelo [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (exllamav3) e as imagens pelo [ComfyUI](https://github.com/comfyanonymous/ComfyUI). Como os dois não cabem juntos numa GPU de 16 GB, o ORDIS troca os modelos automaticamente quando você pede uma imagem e restaura o de conversa no fim.
+É um único app em Rust + Tauri. O modelo de conversa pode ser servido pelo [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (exllamav3) ou por um servidor [llama.cpp](https://github.com/ggml-org/llama.cpp) externo com GGUF; imagens são geradas pelo [ComfyUI](https://github.com/comfyanonymous/ComfyUI). O gerenciamento automático de VRAM continua no fluxo TabbyAPI/ComfyUI. O ORDIS só se conecta ao processo llama.cpp e nunca controla seu ciclo de vida. Veja [docs/LLAMA-CPP-GGUF.md](docs/LLAMA-CPP-GGUF.md).
 
 ## O que faz
 
@@ -24,6 +24,8 @@ Detalhes de cada aba e das ferramentas em [app/README.md](app/README.md) e [COMO
 ## Estado do projeto
 
 O app funciona e é usado no dia a dia, mas **ainda não há instalador**: o ambiente de execução (`runtime/`, com Python, TabbyAPI, ComfyUI e os modelos) é montado à mão. Um assistente de primeiro uso está nos planos.
+
+Para a validação isolada do backend llama.cpp no Windows, baixe o artifact mais recente `ORDIS-Windows-Test-Fase-1.6` do workflow de CI e siga [docs/TESTE-WINDOWS-LLAMA-CPP.md](docs/TESTE-WINDOWS-LLAMA-CPP.md). Ele substitui o artifact de teste anterior. O lançador usa `%LOCALAPPDATA%\Lucille\ORDIS-Teste`; runtimes de TabbyAPI/ComfyUI continuam externos. A mudança do runtime atual do projeto para `%LOCALAPPDATA%\Lucille\` não é automática e não move dados existentes.
 
 ### Montar o runtime
 

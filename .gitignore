@@ -7,6 +7,22 @@ secrets/
 # Instalações, modelos, conversas, credenciais e logs (tudo em runtime/)
 runtime/
 
+# Bases locais de dados, índices de memória e cópias de segurança privadas.
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+*.embedding
+*.embeddings
+*.index
+backups/
+private/
+dados-privados/
+lucille-local/
+
 # Dados pessoais do agente: imagens geradas, anexos e o complemento local do prompt
 agente/workspace/imagens/
 agente/workspace/anexos/

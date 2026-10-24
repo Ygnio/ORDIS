@@ -41,7 +41,7 @@ pub fn estado(c: &Caminhos) -> Conexao {
 }
 
 /// Criptografa com DPAPI para o usuário Windows atual, como o configurador antigo.
-fn proteger(segredo: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn proteger(segredo: &str) -> Result<Vec<u8>, String> {
     let mut dados = segredo.as_bytes().to_vec();
     let entrada = CRYPT_INTEGER_BLOB { cbData: dados.len() as u32, pbData: dados.as_mut_ptr() };
     let mut saida = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
@@ -113,7 +113,7 @@ pub fn testar(c: &Caminhos) -> Result<Value, String> {
 }
 
 /// Decifra o token gravado com DPAPI para o usuário Windows atual.
-fn decifrar(dados: &[u8]) -> Result<String, String> {
+pub(crate) fn decifrar(dados: &[u8]) -> Result<String, String> {
     let mut entrada_buf = dados.to_vec();
     let entrada = CRYPT_INTEGER_BLOB { cbData: entrada_buf.len() as u32, pbData: entrada_buf.as_mut_ptr() };
     let mut saida = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };

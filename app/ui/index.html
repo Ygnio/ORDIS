@@ -187,6 +187,36 @@
       <section id="secao-modelos" class="secao">
         <h2>Modelos</h2>
         <div class="cartao">
+          <p class="rotulo">Backend de inferência</p>
+          <div class="grade-campos">
+            <div>
+              <label for="backend-tipo">Servidor</label>
+              <select id="backend-tipo">
+                <option value="tabbyapi">TabbyAPI / ExLlamaV3</option>
+                <option value="llama_cpp">llama.cpp Server / GGUF</option>
+              </select>
+            </div>
+            <div id="backend-url-bloco">
+                <label id="backend-url-label" for="backend-url">Endereço do TabbyAPI</label>
+              <input id="backend-url" type="url" placeholder="http://127.0.0.1:8080" spellcheck="false">
+            </div>
+            <div id="backend-key-bloco">
+              <label for="backend-key">Chave API (opcional)</label>
+              <div class="campo-com-botao">
+                <input id="backend-key" type="password" autocomplete="new-password" placeholder="Deixe em branco para manter a chave">
+                <button id="backend-key-remover" class="fantasma pequeno">Remover</button>
+              </div>
+            </div>
+          </div>
+          <p id="backend-nota" class="sutil pequeno">O llama.cpp é conectado como serviço externo. O ORDIS não controla seu processo.</p>
+          <div class="acoes">
+            <button id="backend-salvar" class="primario">Salvar backend e testar</button>
+            <button id="backend-testar">Testar conexão</button>
+          </div>
+          <div id="backend-status" class="sutil pequeno" role="status"></div>
+        </div>
+        <div class="cartao">
+          <div id="tabby-model-config">
           <div class="linha-config">
             <p class="rotulo">Conversa</p>
             <button class="fantasma pequeno" data-pasta="conversa"><svg><use href="#i-pasta"/></svg>Abrir pasta</button>
@@ -222,6 +252,8 @@
             <label class="chave"><input id="mc-mtp" type="checkbox"><span></span>MTP: gera ~65% mais rápido, usa ~1 GB a mais de VRAM</label>
             <label class="campo-mtp" for="mc-mtp-tokens">Tokens adiantados <input id="mc-mtp-tokens" type="number" min="1" max="8"></label>
           </div>
+          </div>
+          <div id="llama-model-info" class="sutil pequeno" role="status" hidden></div>
         </div>
 
         <div class="cartao">
@@ -325,6 +357,7 @@
   <div id="dica" class="dica" hidden></div>
 
   <script src="md.js"></script>
+  <script src="backend-status.js"></script>
   <script src="app.js"></script>
   <script src="agente.js"></script>
   <script src="imagens.js"></script>

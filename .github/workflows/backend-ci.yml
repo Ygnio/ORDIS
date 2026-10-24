@@ -1,0 +1,203 @@
+name: Inference backend CI
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+jobs:
+  windows-gnu:
+    name: Windows GNU (original target)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-toolchain
+          path-type: inherit
+
+      - name: Verify GNU linker tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Command dlltool.exe, gcc.exe | Select-Object Name, Source | Format-Table -AutoSize
+          dlltool.exe --version
+          gcc.exe --version
+
+      - name: Install Rust GNU toolchain
+        shell: pwsh
+        run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component rustfmt
+
+      - name: Install Node.js and Python
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Reject private or generated files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tracked = git ls-files
+          $forbidden = $tracked | Where-Object {
+            $_ -match '(^|/)(runtime|target|node_modules|venv|\.venv|__pycache__)(/|$)' -or
+            $_ -match '(^|/)(\.env($|\.)|AGENTS\.local\.md|api_tokens\.yml|token\.dpapi|llama-api-key\.dpapi)$' -or
+            $_ -match '\.(gguf|exl3|safetensors|dpapi|sqlite|sqlite3|db|wal|shm|embedding|embeddings|pem|p12|pfx|key|log)$' -or
+            $_ -match '(?i)(^|/)(private|dados-privados|lucille-local|memorias|memories|embeddings|backups)(/|$)'
+          }
+          if ($forbidden) {
+            Write-Error "Private/generated files are tracked:`n$($forbidden -join "`n")"
+          }
+
+      - name: Check formatting of changed Rust backend module
+        shell: pwsh
+        run: rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --check app/src/backends.rs
+
+      - name: Check JavaScript syntax
+        shell: pwsh
+        run: |
+          node --check app/ui/modelos.js
+          node --check app/ui/agente.js
+          node --check app/ui/app.js
+          node --check app/ui/imagens.js
+          node --check app/ui/backend-status.js
+          node --test scripts/test-backend-ui.cjs
+
+      - name: Run Python tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
+      - name: Run Rust and mock-server tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path $env:RUNNER_TEMP 'cargo-test-gnu.log'
+          cargo +stable-x86_64-pc-windows-gnu test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Windows test binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path $env:RUNNER_TEMP 'cargo-build-gnu-release.log'
+          cargo +stable-x86_64-pc-windows-gnu build --release --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assemble privacy-safe test ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'ORDIS-Windows-Test'
+          $appOut = Join-Path $stage 'app'
+          New-Item -ItemType Directory -Force $appOut, (Join-Path $appOut 'ui'), (Join-Path $stage 'config'), (Join-Path $stage 'scripts'), (Join-Path $stage 'agente/workspace'), (Join-Path $stage 'docs') | Out-Null
+          Copy-Item app/target/release/ordis.exe (Join-Path $appOut 'ORDIS.exe')
+          Copy-Item app/target/release/ordis-cli.exe (Join-Path $appOut 'ordis-cli.exe')
+          $loader = Get-Item app/target/release/WebView2Loader.dll -ErrorAction SilentlyContinue
+          if (-not $loader) { $loader = Get-ChildItem app/target -Recurse -File -Filter WebView2Loader.dll | Where-Object { $_.FullName -match '\\x64\\WebView2Loader\.dll$' } | Select-Object -First 1 }
+          if (-not $loader) { throw 'WebView2Loader.dll x64 não foi encontrado na saída GNU do Tauri.' }
+          Write-Host "WebView2 loader: $($loader.FullName)"
+          Copy-Item $loader.FullName $appOut
+          Copy-Item app/ui/ordis.png (Join-Path $appOut 'ui/ordis.png')
+          Copy-Item config/paths.json, config/tabbyapi-inicial.yml, config/ordis_qwen_thinking.yml, config/runtime-packages.txt, config/images-requirements.lock.txt, config/README.md (Join-Path $stage 'config')
+          Copy-Item scripts/serve_inference.py, scripts/service_shutdown.py, scripts/agent_web_search.py, scripts/ordis_token_monitor.py, scripts/token_counter_paths.py (Join-Path $stage 'scripts')
+          Copy-Item agente/workspace/AGENTS.md (Join-Path $stage 'agente/workspace/AGENTS.md')
+          Copy-Item docs/LLAMA-CPP-GGUF.md, docs/TESTE-WINDOWS-LLAMA-CPP.md (Join-Path $stage 'docs')
+          Copy-Item scripts/Iniciar-ORDIS-Teste.ps1 (Join-Path $stage 'Iniciar-ORDIS-Teste.ps1')
+          $forbidden = Get-ChildItem $stage -Recurse -File | Where-Object {
+            $_.Extension -match '^\.(gguf|exl3|safetensors|dpapi|sqlite|sqlite3|db|wal|shm|pem|p12|pfx|key|log)$' -or
+            $_.Name -match '(?i)(api[_-]?tokens?\.yml|llama-api-key|secret|credential|history|memory|embedding|backup|\.env)'
+          }
+          if ($forbidden) { throw "Arquivo privado/indevido no pacote: $($forbidden.FullName -join ', ')" }
+          $zip = Join-Path $env:RUNNER_TEMP 'ORDIS-Windows-Test.zip'
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Select-Object FullName, Length | Format-List
+
+      - name: Upload Windows test ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORDIS-Windows-Test-Fase-1.6
+          path: ${{ runner.temp }}/ORDIS-Windows-Test.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload GNU build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-gnu-log
+          path: ${{ runner.temp }}/cargo-test-gnu.log
+          if-no-files-found: ignore
+
+      - name: Upload GNU release build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-build-gnu-release-log
+          path: ${{ runner.temp }}/cargo-build-gnu-release.log
+          if-no-files-found: ignore
+
+  windows-msvc-compatibility:
+    name: Windows MSVC compatibility check
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Visual C++ environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Rust MSVC toolchain
+        shell: pwsh
+        run: rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal --component rustfmt
+
+      - name: Run Rust tests without changing the repository target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path $env:RUNNER_TEMP 'cargo-test-msvc.log'
+          cargo +stable-x86_64-pc-windows-msvc test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload MSVC build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-msvc-log
+          path: ${{ runner.temp }}/cargo-test-msvc.log
+          if-no-files-found: ignore
+
+  credential-scan:
+    name: Credential scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for credentials
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: latest
+          GITLEAKS_ENABLE_COMMENTS: false

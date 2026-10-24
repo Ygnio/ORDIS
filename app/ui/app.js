@@ -1,8 +1,11 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+let backendAtual = null;
+const nomeBackend = () => backendAtual?.backend === 'llama_cpp' ? 'llama.cpp' : 'TabbyAPI';
+const nomeModeloAtivo = () => backendAtual?.model || 'Modelo desconhecido';
 const SERVICOS = {
-  inferencia: { titulo: 'Inferência', detalhe: () => `${nomes.conversa} · TabbyAPI` },
+  inferencia: { titulo: 'Inferência', detalhe: () => `${nomeModeloAtivo()} · ${nomeBackend()} · ${backendAtual?.connected ? 'conectado' : 'desconectado'}` },
   imagens: { titulo: 'Imagens', detalhe: () => `${nomes.imagem} · ComfyUI` },
 };
 const SITUACAO = { pronto: 'Pronto', iniciando: 'Iniciando…', desligado: 'Desligado' };
@@ -63,6 +66,7 @@ window.ordis = {
   },
   mostrarAba,
   nomes: () => nomes,
+  backendStatus: () => backendAtual,
   // Há troca de modelo quando este app gera uma imagem ou quando o ComfyUI
   // está ligado (geração iniciada pelo terminal, por exemplo).
   emTroca(p) {
@@ -185,16 +189,16 @@ function mostrarTokens(t, inferenciaLigada) {
   }
 }
 
-function algumLigado(p) {
-  return p.servicos.some((s) => s.situacao !== 'desligado');
+function controleServicos(p) {
+  return window.ordisBackendStatus.serviceControl(backendAtual?.backend || 'tabbyapi', p?.servicos);
 }
 
 function mostrarControles(p) {
-  const ligado = p && algumLigado(p);
-  const rotulo = ocupado ? 'Aguarde…' : ligado ? 'Desligar' : 'Iniciar';
+  const controle = p && controleServicos(p);
+  const rotulo = ocupado ? 'Aguarde…' : controle?.label || 'Iniciar';
   for (const b of [$('alternar-servicos'), $('pop-acao')]) {
-    b.disabled = ocupado || !p;
-    b.classList.toggle('primario', !ligado);
+    b.disabled = ocupado || !p || !controle?.enabled;
+    b.classList.toggle('primario', !controle?.active);
   }
   $('alternar-servicos').querySelector('span').textContent = rotulo;
   $('pop-acao').textContent = rotulo;
@@ -207,9 +211,9 @@ function mostrarGlobal(p) {
   $('status-global').querySelector('.ponto').className = `ponto ${situacao}`;
   $('status-global').dataset.dica = troca
     ? inferencia.situacao === 'iniciando'
-      ? `${nomes.conversa} voltando para a GPU…`
-      : `${nomes.conversa} fora da GPU enquanto a imagem é gerada`
-    : `${nomes.conversa}: ${SITUACAO[inferencia.situacao].toLowerCase()}`;
+      ? `${nomeModeloAtivo()} voltando para a GPU…`
+      : `${nomeModeloAtivo()} fora da GPU enquanto a imagem é gerada`
+    : `${nomeModeloAtivo()} · ${nomeBackend()}: ${backendAtual?.connected ? 'conectado' : SITUACAO[inferencia.situacao].toLowerCase()}`;
   $('pop-linhas').replaceChildren(
     ...p.servicos.map((s) => {
       const l = el('div', 'linha-servico');
@@ -221,6 +225,25 @@ function mostrarGlobal(p) {
   $('pop-vram').textContent = v ? `GPU: ${v.usado.toFixed(1)} de ${v.total.toFixed(1)} GB em uso` : 'GPU: memória indisponível';
 }
 
+window.addEventListener('backend-status', ({ detail }) => {
+  backendAtual = detail;
+  if (detail?.model) nomes = { ...nomes, conversa: detail.model };
+  if (ultimoPainel) {
+    $('servicos').replaceChildren(...ultimoPainel.servicos.map(cartaoServico));
+    mostrarGlobal(ultimoPainel);
+    const controle = controleServicos(ultimoPainel);
+    if (!ocupado) {
+      const ligado = ultimoPainel.servicos.find((s) => s.nome === 'inferencia').situacao === 'pronto';
+      $('resumo').textContent = controle.summary || (ligado
+        ? 'ORDIS pronto. O modelo está carregado na GPU.'
+        : controle.active
+          ? 'Serviços parcialmente ligados.'
+          : 'ORDIS desligado. A GPU está livre.');
+    }
+    mostrarControles(ultimoPainel);
+  }
+});
+
 async function atualizar() {
   try {
     const p = await invoke('painel');
@@ -229,15 +252,16 @@ async function atualizar() {
     window.dispatchEvent(new CustomEvent('painel', { detail: p }));
     $('servicos').replaceChildren(...p.servicos.map(cartaoServico));
     const ligado = p.servicos.find((s) => s.nome === 'inferencia').situacao === 'pronto';
+    const controle = controleServicos(p);
     mostrarVram(lerVram(p.vram));
     mostrarTokens(p.tokens, ligado);
     mostrarGlobal(p);
     if (!ocupado) {
-      $('resumo').textContent = ligado
+      $('resumo').textContent = controle.summary || (ligado
         ? 'ORDIS pronto. O modelo está carregado na GPU.'
-        : algumLigado(p)
+        : controle.active
           ? 'Serviços parcialmente ligados.'
-          : 'ORDIS desligado. A GPU está livre.';
+          : 'ORDIS desligado. A GPU está livre.');
     }
     mostrarControles(p);
   } catch (e) {
@@ -247,8 +271,10 @@ async function atualizar() {
 
 async function alternarServicos() {
   if (ocupado || !ultimoPainel) return;
-  const desligar = algumLigado(ultimoPainel);
-  const rotulo = desligar ? 'Desligando o ORDIS…' : 'Iniciando o ORDIS…';
+  const controle = controleServicos(ultimoPainel);
+  if (controle.action === 'none') return;
+  const desligar = controle.action === 'stop';
+  const rotulo = controle.busyLabel;
   ocupado = true;
   mostrarControles(ultimoPainel);
   $('resumo').textContent = rotulo;
@@ -256,7 +282,7 @@ async function alternarServicos() {
   try {
     await invoke(desligar ? 'parar' : 'iniciar');
     registrar('Concluído.');
-    window.ordis.avisar(desligar ? 'ORDIS desligado. GPU livre.' : 'ORDIS pronto.');
+    window.ordis.avisar(desligar ? controle.stoppedNotice : 'ORDIS pronto.');
   } catch (e) {
     registrar(String(e), true);
     window.ordis.avisar(String(e), true);

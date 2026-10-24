@@ -16,7 +16,13 @@
     cancelled: 'Geração cancelada. Finalizando…',
     failed: 'Finalizando após uma falha…',
   };
-  const aviso = () => `Ao gerar, o ${window.ordis.nomes().conversa} sai da GPU e volta no fim. Leva alguns minutos.`;
+  const aviso = () => {
+    const backend = window.ordis.backendStatus();
+    if (backend?.backend === 'llama_cpp') {
+      return 'llama.cpp é um servidor externo e permanece ativo durante a geração. O uso simultâneo de VRAM com o ComfyUI depende da configuração do servidor.';
+    }
+    return `Ao gerar, o ${window.ordis.nomes().conversa} sai da GPU e volta no fim. Leva alguns minutos.`;
+  };
 
   let gerando = false;
   let inicio = 0;
@@ -222,5 +228,8 @@
       if (!gerando && !/^Concluída|cancelada/.test($('img-estado').textContent)) $('img-estado').textContent = aviso();
       galeria();
     }
+  });
+  window.addEventListener('backend-refresh', () => {
+    if (!gerando) $('img-estado').textContent = aviso();
   });
 })();

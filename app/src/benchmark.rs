@@ -520,6 +520,9 @@ fn ja_feito(rel: &Value, contexto: u64, esforco: &str, repeticao: u64, id: &str)
 }
 
 pub fn executar(c: &Caminhos, o: Opcoes) -> Result<(), String> {
+    if crate::backends::active_kind(c) != crate::backends::BackendKind::Tabbyapi {
+        return Err("O benchmark de contexto atual exige TabbyAPI; o backend llama.cpp não será alterado.".into());
+    }
     let caminho = o.relatorio.clone().unwrap_or_else(|| c.projeto.join("docs").join(format!("BENCHMARK-{}.json", o.rotulo)));
     let cfg = c.runtime.join("tabbyAPI/config.yml");
     let original = fs::read(&cfg).map_err(|e| format!("Falha ao ler {}: {e}", cfg.display()))?;

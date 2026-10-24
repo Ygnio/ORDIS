@@ -483,11 +483,13 @@ pub fn importar_fluxo(c: &Caminhos, nome: &str, conteudo: &str) -> Result<String
 // ---------- Teste do modelo de conversa ----------
 
 fn conversar(c: &Caminhos, corpo: Value) -> Result<Value, String> {
-    let chave = controle::chave_api(c).ok_or("Chave da API do TabbyAPI não encontrada.")?;
-    ureq::post("http://127.0.0.1:5000/v1/chat/completions")
-        .timeout(std::time::Duration::from_secs(300))
-        .set("Authorization", &format!("Bearer {chave}"))
-        .send_json(corpo)
+    let (base, chave) = crate::backends::active_endpoint(c);
+    let mut req = ureq::post(&format!("{}/v1/chat/completions", base.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(300));
+    if let Some(key) = chave.as_deref().filter(|k| !k.is_empty()) {
+        req = req.set("Authorization", &format!("Bearer {key}"));
+    }
+    req.send_json(corpo)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => {
                 format!("HTTP {code}: {}", r.into_string().unwrap_or_default().chars().take(300).collect::<String>())
@@ -498,10 +500,25 @@ fn conversar(c: &Caminhos, corpo: Value) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
+fn corpo_teste(c: &Caminhos, modelo: &str, mensagens: Value, limite_tabby: u32) -> Value {
+    let mut corpo = json!({"model": modelo, "messages": mensagens});
+    if crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi {
+        corpo["max_tokens"] = json!(limite_tabby);
+    }
+    corpo
+}
+
 /// Carrega o modelo configurado (se preciso) e confere resposta simples,
 /// separação do raciocínio, chamada de ferramenta e, se ativada, visão.
 pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
-    let cfg = conversa(c);
+    let mut cfg = conversa(c);
+    if let Ok(modelo) = crate::backends::selected_model(c) { cfg.modelo = modelo; }
+    let capacidades = crate::backends::active_capabilities(c);
+    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
+        cfg.visao = capacidades.image_input;
+        cfg.raciocinio = capacidades.reasoning == Some(true);
+        cfg.ferramentas = if capacidades.tools { "llama.cpp".into() } else { String::new() };
+    }
     let mut etapas = vec![];
     fn etapa(etapas: &mut Vec<Value>, nome: &str, inicio: std::time::Instant, r: Result<String, String>) -> bool {
         let ok = r.is_ok();
@@ -524,8 +541,8 @@ pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
 
     progresso("Testando uma resposta curta…");
     let t = std::time::Instant::now();
-    let r = conversar(c, json!({"model": cfg.modelo, "max_tokens": 1024,
-        "messages": [{"role": "user", "content": "Responda apenas a palavra: OK"}]}))
+    let r = conversar(c, corpo_teste(c, &cfg.modelo,
+        json!([{"role": "user", "content": "Responda apenas a palavra: OK"}]), 1024))
     .and_then(|v| {
         let m = &v["choices"][0]["message"];
         let texto = m["content"].as_str().unwrap_or("").trim().to_string();
@@ -533,9 +550,9 @@ pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
         if texto.is_empty() {
             return Err("A resposta veio vazia.".into());
         }
-        if texto.contains("</think>") || (cfg.raciocinio && !raciocinio && texto.len() > 40) {
+        if cfg.raciocinio && !raciocinio {
             return Err(format!(
-                "O raciocínio veio misturado com a resposta. Confira o formato de raciocínio do modelo. Início: {}",
+                "O backend não devolveu o campo explícito de raciocínio esperado. Início da resposta: {}",
                 texto.chars().take(80).collect::<String>()
             ));
         }
@@ -547,10 +564,11 @@ pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
     if !cfg.ferramentas.is_empty() {
         progresso("Testando uma chamada de ferramenta…");
         let t = std::time::Instant::now();
-        let r = conversar(c, json!({"model": cfg.modelo, "max_tokens": 2048,
-            "messages": [{"role": "user", "content": "Use a ferramenta hora_atual para saber a hora. Não responda sem chamá-la."}],
-            "tools": [{"type": "function", "function": {"name": "hora_atual", "description": "Devolve a hora atual.",
-                        "parameters": {"type": "object", "properties": {}}}}]}))
+        let mut corpo = corpo_teste(c, &cfg.modelo,
+            json!([{"role": "user", "content": "Use a ferramenta hora_atual para saber a hora. Não responda sem chamá-la."}]), 2048);
+        corpo["tools"] = json!([{"type": "function", "function": {"name": "hora_atual", "description": "Devolve a hora atual.",
+                    "parameters": {"type": "object", "properties": {}}}}]);
+        let r = conversar(c, corpo)
         .and_then(|v| {
             let chamadas = &v["choices"][0]["message"]["tool_calls"];
             match chamadas[0]["function"]["name"].as_str() {
@@ -569,9 +587,9 @@ pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
         let t = std::time::Instant::now();
         let r = crate::agente::data_url(&c.projeto.join("app/ui/ordis.png"))
             .and_then(|url| {
-                conversar(c, json!({"model": cfg.modelo, "max_tokens": 2048, "messages": [{"role": "user", "content": [
+                conversar(c, corpo_teste(c, &cfg.modelo, json!([{"role": "user", "content": [
                     {"type": "text", "text": "Qual é a cor predominante desta imagem? Responda com uma palavra em português."},
-                    {"type": "image_url", "image_url": {"url": url}}]}]}))
+                    {"type": "image_url", "image_url": {"url": url}}]}]), 2048))
             })
             .and_then(|v| {
                 let texto = v["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().to_lowercase();

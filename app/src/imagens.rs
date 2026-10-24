@@ -322,7 +322,9 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
             checar()?;
             let mut estado = controle::ler_estado(c);
             let mut sys = System::new();
-            let restaurar = estado.get("inferencia").is_some_and(|i| controle::rastreado(&mut sys, i));
+            let restaurar = crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi
+                && crate::backends::manages_tabby(c)
+                && estado.get("inferencia").is_some_and(|i| controle::rastreado(&mut sys, i));
             // Nunca encerra um processo externo que esteja usando as portas.
             for (nome, porta) in controle::SERVICOS {
                 let nosso = estado.get(nome).is_some_and(|i| controle::rastreado(&mut sys, i));
@@ -333,7 +335,14 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
             let mut prompt_id: Option<String> = None;
             let parar_ws = Arc::new(AtomicBool::new(false));
             let gerado = (|| -> Result<Value, Erro> {
-                st.etapa("releasing_llm", "Liberando a GPU para imagens...");
+                st.etapa(
+                    "releasing_llm",
+                    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
+                        "O llama.cpp externo permanece ativo durante a geração..."
+                    } else {
+                        "Liberando a GPU para imagens..."
+                    },
+                );
                 controle::parar_um(c, "inferencia", &mut estado, &mut sys)?;
                 checar()?;
                 st.etapa("starting_images", "Iniciando o gerador de imagens...");
@@ -411,14 +420,22 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
                 Err(Erro::Falha("A geração excedeu 20 minutos.".into()))
             })();
 
-            // Limpeza: sempre libera a GPU e tenta deixar o Qwen como estava.
+            // Limpeza: encerra apenas o ComfyUI iniciado pelo ORDIS e restaura
+            // Tabby somente quando ele era o backend ativo e gerenciado.
             let mut gerado = gerado;
             if let (Err(Erro::Cancelado(_)), Some(pid)) = (&gerado, &prompt_id) {
                 st.etapa("cancelling", "Cancelando esta geração...");
                 let _ = pedir("POST", &format!("/api/jobs/{pid}/cancel"), Some(json!({})), 3);
             }
             parar_ws.store(true, Ordering::Relaxed);
-            st.etapa("stopping_images", "Encerrando o gerador de imagens e liberando a GPU...");
+            st.etapa(
+                "stopping_images",
+                if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
+                    "Encerrando o gerador de imagens. O llama.cpp externo continua ativo..."
+                } else {
+                    "Encerrando o gerador de imagens e liberando a GPU..."
+                },
+            );
             let mut restaurar = restaurar;
             if let Err(e) = controle::parar_um(c, "imagens", &mut estado, &mut sys) {
                 // Não recarrega o Qwen enquanto o ComfyUI pode estar ocupando a VRAM.
