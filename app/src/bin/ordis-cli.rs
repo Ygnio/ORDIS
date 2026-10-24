@@ -57,6 +57,16 @@ impl agente::Saida for Terminal {
 fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
     let imprimir = |m: &str| println!("{m}");
     match acao {
+        "memoria" => {
+            use std::io::Read;
+            let action=std::env::args().nth(2).ok_or("Informe uma ação local de memória.")?;
+            let mut input=String::new();std::io::stdin().take(65537).read_to_string(&mut input).map_err(|_|"Entrada JSON inválida.")?;
+            if input.len()>65536{return Err("Entrada JSON muito grande.".into());}
+            let args=if input.trim().is_empty(){serde_json::json!({})}else{serde_json::from_str(&input).map_err(|_|"Entrada JSON inválida.")?};
+            let value=memory::action(c,&action,args)?;println!("{}",value);return Ok(());
+        }
+        "memoria-idle" => {memory::idle_tick(c)?;println!("{{\"ok\":true}}");return Ok(());}
+
         "iniciar" => controle::iniciar(c, &imprimir)?,
         "parar" => controle::parar(c, &imprimir)?,
         "estado" => {}
@@ -68,6 +78,7 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
             let texto = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
             let s = agente::nova(c)?;
             agente::responder(c, &s.id, texto, vec![], &AtomicBool::new(false), &Terminal)?;
+            memory::idle_tick(c)?;
             println!("\n[sessão {}]", s.id);
             return Ok(());
         }

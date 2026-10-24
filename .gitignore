@@ -53,3 +53,7 @@ local/
 # Python
 __pycache__/
 *.log
+
+technical-reports/
+technical-memory-report*.json
+pending-records/

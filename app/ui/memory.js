@@ -1,10 +1,10 @@
 /* Private memory UI. All stored content uses textContent, never HTML or Markdown. */
 const MemoryUI = {
   nullableId(value) { return value === '' ? null : Number(value); },
-  options(retrieval, extraction, budget, project) {
+  options(retrieval, extraction, budget, project, auto=false) {
     const token_budget = Number(budget);
     if (!Number.isInteger(token_budget) || token_budget < 128 || token_budget > 4096) throw new Error('Orçamento: 128 a 4096 tokens estimados.');
-    return { retrieval: !!retrieval, extraction: !!extraction, token_budget, project_id: this.nullableId(project) };
+    return { auto_consolidation:!!auto, retrieval: !!retrieval, extraction: !!extraction, token_budget, project_id: this.nullableId(project) };
   },
   restoreArgs(name, digest, confirmed) {
     if (!confirmed || !name || !digest) throw new Error('Restauração não confirmada.');
@@ -32,16 +32,19 @@ if (typeof window !== 'undefined') (() => {
     for (const id of ['active-project','filter-project','project','project-edit']) select(get(id), projects.map(p => [p.id,p.name]), id === 'filter-project' ? 'Todos os projetos' : 'Sem projeto');
     for (const id of ['kind','filter-kind']) select(get(id), data.kinds.map(k => [k, labels[k]]), id === 'filter-kind' ? 'Todas as categorias' : null);
     for (const id of ['state','filter-state']) select(get(id), data.states.map(k => [k, labels[k]]), id === 'filter-state' ? 'Todos os estados' : null);
-    const o = data.options; get('retrieval').checked = o.retrieval; get('extraction').checked = o.extraction; get('budget').value = o.token_budget; get('active-project').value = o.project_id ?? '';
+    const o = data.options; get('auto').checked=o.auto_consolidation; get('retrieval').checked = o.retrieval; get('extraction').checked = o.extraction; get('budget').value = o.token_budget; get('active-project').value = o.project_id ?? '';
     const s = data.stats; get('stats').textContent = `Banco: ${s.path}\nSchema ${s.schema} · ${s.memories} memórias · ${s.messages} mensagens novas · ${s.projects} projetos\nSQLite: ${s.database_bytes} bytes + WAL ${s.wal_bytes} bytes · cache configurado: ${s.cache_kib} KiB · auditorias: ${s.retrievals}`;
     const d=await call('dashboard');
     get('overview').textContent=`${d.states.active} confirmadas podem fornecer contexto; ${d.states.candidate} candidatos aguardam sua aprovação; ${d.states.conflict} contradições ficam fora da recuperação; ${d.states.obsolete} obsoletas estão desativadas. Identidade permanente é editada em Configurações.`;
-    get('confirmed').textContent=`Confirmadas (${d.states.active})`;get('candidates').textContent=`Aguardando revisão (${d.states.candidate})`;get('conflicts').textContent=`Contradições (${d.states.conflict})`;
+    get('confirmed').textContent=`Confirmadas (${d.states.active})`;get('candidates').textContent=`Aguardando revisão (${d.states.candidate})`;get('conflicts').textContent=`Contradições (${d.states.conflict})`;get('obsolete').textContent=`Obsoletas (${d.states.obsolete})`;
+    get('automation-state').textContent=`Recuperação ${o.retrieval?'ativada':'desativada'} · Extração ${o.extraction?'ativada':'desativada'} · Consolidação automática ${o.auto_consolidation?(d.technical.auto_paused?'pausada por interrupção; salve opções para retomar':'ativada; aguarda ociosidade'):'desativada'}. Sem extração habilitada, consolidação automática não executa.`;
+    get('extraction-state').textContent=`Mensagens com candidato: ${d.extraction_states.candidate_available||0}; sem informação durável: ${d.extraction_states.no_durable_information||0}; extração desativada: ${d.extraction_states.extraction_disabled||0}. Não encontrar uma memória é um resultado normal.`;
+    get('diagnostics').textContent=JSON.stringify(d.technical,null,2);
     const recent=get('recent');recent.replaceChildren();
     if(!d.recent.length)recent.textContent='Nenhuma recuperação registrada. Aprove uma preferência e inicie outra conversa com recuperação habilitada.';
     for(const r of d.recent){const p=document.createElement('p');p.textContent=`${new Date(r.date*1000).toLocaleString()} · ${r.ids.length ? r.ids.map(id=>'#'+id).join(', ') : 'Nenhuma memória selecionada'} · ${r.tokens} tokens estimados`;recent.append(p);}
     const states={idle:'Ainda não executada',running:'Em execução',interrupted:'Interrompida; pode retomar',completed:'Último lote concluído',error:'Último lote falhou; fontes preservadas'};
-    get('consolidation-state').textContent=`${(d.maintenance.state==='running'&&!d.running?'Execução anterior interrompida; pode retomar':states[d.maintenance.state])||d.maintenance.state} · ${d.maintenance.processed} lotes processados · ${d.pending_messages} mensagens aguardando consolidação. Resumos e decisões extraídos exigem revisão.`;
+    get('consolidation-state').textContent=`${(d.maintenance.state==='running'&&!d.running?'Execução anterior interrompida; pode retomar':states[d.maintenance.state])||d.maintenance.state} · ${d.maintenance.processed} lotes processados · ${d.pending_messages} mensagens aguardando consolidação · última atualização: ${d.maintenance.date ? new Date(d.maintenance.date*1000).toLocaleString() : "ainda não executada"}. Resumos e decisões extraídos exigem revisão.`;
     get('project-summary').textContent=projects.length ? projects.map(p=>`${p.name}: ${p.execution_state||'estado não informado'}; próxima tarefa: ${p.next_tasks||'não informada'}`).join(' | ') : 'Nenhum projeto cadastrado. Cadastre objetivo e tarefas de retomada abaixo.';
     loaded = true; await search();
   }
@@ -59,13 +62,14 @@ if (typeof window !== 'undefined') (() => {
       content.textContent = m.content;
       source.textContent = `Origem: ${m.provenance} · criado ${new Date(m.created_at * 1000).toLocaleString()} · atualizado ${new Date(m.updated_at * 1000).toLocaleString()} · fontes: ${JSON.stringify(m.sources)}`;
       article.append(title,content,source);
+      if(m.state==='candidate'||m.state==='conflict'){const approve=document.createElement('button');approve.textContent=m.state==='conflict'?'Usar esta versão; desativar anteriores':'Aprovar';approve.onclick=async()=>{const replace=m.state==='conflict';if(replace&&!window.confirm('Confirmar esta versão e marcar as outras versões da mesma chave e projeto como obsoletas?'))return;try{await call('approve',{id:m.id,replace});await refresh();message('Memória aprovada.');}catch(e){message(String(e));}};article.append(approve);}
       const edit = document.createElement('button'); edit.textContent = 'Revisar / editar'; edit.onclick = () => editor(m); article.append(edit);
       const del = document.createElement('button'); del.textContent = 'Excluir'; del.onclick = async () => { if (!window.confirm(`Excluir memória #${m.id}? Fontes JSON e backups existentes permanecerão.`)) return; try { await call('delete',{id:m.id}); await refresh(); message('Memória excluída.'); } catch(e) { message(String(e)); } }; article.append(del); list.append(article);
     }
   }
-  for(const [id,state] of [['confirmed','active'],['candidates','candidate'],['conflicts','conflict']])bind(id,async()=>{get('filter-state').value=state;await search();});
+  for(const [id,state] of [['confirmed','active'],['candidates','candidate'],['conflicts','conflict'],['obsolete','obsolete']])bind(id,async()=>{get('filter-state').value=state;await search();});
   bind('search',search); bind('new',() => editor()); bind('close',() => {get('form').hidden = true;});
-  bind('options',async () => { await call('options',MemoryUI.options(get('retrieval').checked,get('extraction').checked,get('budget').value,get('active-project').value)); message('Opções salvas.'); await refresh(); });
+  bind('options',async () => { await call('options',MemoryUI.options(get('retrieval').checked,get('extraction').checked,get('budget').value,get('active-project').value,get('auto').checked)); message('Opções salvas.'); await refresh(); });
   get('form').addEventListener('submit',async e => { e.preventDefault(); try { const memory = {kind:get('kind').value,content:get('content').value,project_id:MemoryUI.nullableId(get('project').value),fact_key:get('key').value,state:get('state').value,importance:Number(get('importance').value)}; await call('save',{id:editing,memory}); get('form').hidden = true; await refresh(); message('Memória salva. Confira o estado após a detecção de contradições.'); } catch(err) { message(String(err)); } });
   function projectEditor(p = {}) {
     projectId = p.id ?? null; const fields = get('project-fields'); fields.replaceChildren();
@@ -74,9 +78,10 @@ if (typeof window !== 'undefined') (() => {
   }
   bind('project-new',() => projectEditor()); bind('project-load',() => {const p=projects.find(p => p.id === Number(get('project-edit').value)); if(p) projectEditor(p);});
   get('project-form').addEventListener('submit',async e => {e.preventDefault(); try { const p={id:projectId}; for(const k of Object.keys(projectLabels)) p[k]=document.getElementById(`mem-p-${k}`).value; await call('project_save',p); get('project-form').hidden=true; await refresh(); message('Projeto salvo como referência local.'); } catch(err) {message(String(err));} });
-  bind('consolidate',async () => {get('consolidate').disabled = true; try { const r=await call('consolidate'); await refresh(); message(`${r.processed} lotes consolidados${r.interrupted ? ' · interrompido' : ''}. Revise os candidatos.`); } finally {get('consolidate').disabled = false;} });
+  bind('consolidate',async () => {get('consolidate').disabled = true; try { const r=await call('consolidate'); await refresh(); message(r.deferred?'Aguarde a resposta terminar antes de consolidar manualmente.':`${r.processed} lotes consolidados${r.interrupted ? ' · interrompido' : ''}. Revise os candidatos.`); } finally {get('consolidate').disabled = false;} });
   bind('stop',async () => {await invoke('memory_stop');message('Interrupção solicitada; o lote atual será concluído.');});
   async function backups() {select(get('backup-list'),(await call('backups')).map(x => [x,x]),'Selecione um backup');}
+  bind('technical-export',async()=>{const r=await call('technical_export');message(`Relatório sanitizado salvo localmente: ${r.path}. Contém somente códigos, contagens e tempos.`);});
   bind('backups-refresh',backups);
   bind('backup',async () => {const r=await call('backup');await backups();message(`Backup privado criado: ${r.directory}\\${r.name}`);});
   bind('export',async () => {const r=await call('export');message(`Exportação privada: ${r.path}`);});

@@ -4,19 +4,63 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static ACCESS: Mutex<()> = Mutex::new(());
 static CONSOLIDATING: AtomicBool = AtomicBool::new(false);
 pub static STOP_CONSOLIDATION: AtomicBool = AtomicBool::new(false);
-const VERSION: i64 = 3;
-const MIGRATIONS: [&str; 3] = [
+static ACTIVE_CHATS: AtomicUsize = AtomicUsize::new(0);
+static AUTO_PAUSED: AtomicBool = AtomicBool::new(false);
+static RUNTIME_DIAGNOSTICS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
+fn sanitize_code(code: &str) -> &str {
+    match code {
+        "record_skipped_private_or_oversized"
+        | "record_duplicate"
+        | "assistant_not_extracted"
+        | "extraction_disabled"
+        | "no_durable_information"
+        | "rejected_previously"
+        | "candidate_available"
+        | "candidate_deduplicated"
+        | "memory_saved"
+        | "memory_approved"
+        | "retrieval_disabled_or_private"
+        | "retrieval_no_match_or_budget"
+        | "retrieval_selected"
+        | "consolidation_failure" => code,
+        _ => "unknown_code",
+    }
+}
+fn note(code: &'static str) {
+    if let Ok(mut d) = RUNTIME_DIAGNOSTICS.lock() {
+        *d.entry(code).or_default() += 1;
+    }
+}
+pub struct ChatGuard;
+pub fn chat_started() -> ChatGuard {
+    ACTIVE_CHATS.fetch_add(1, Ordering::SeqCst);
+    ChatGuard
+}
+impl Drop for ChatGuard {
+    fn drop(&mut self) {
+        ACTIVE_CHATS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+pub fn stop() {
+    AUTO_PAUSED.store(true, Ordering::SeqCst);
+    STOP_CONSOLIDATION.store(true, Ordering::SeqCst);
+}
+const VERSION: i64 = 4;
+const MIGRATIONS: [&str; 4] = [
     include_str!("migrations/001_memory.sql"),
     include_str!("migrations/002_fts.sql"),
     include_str!("migrations/003_identity.sql"),
+    include_str!("migrations/004_reliability.sql"),
 ];
 const KINDS: [&str; 11] = [
     "fact",
@@ -36,6 +80,7 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 fn error(_: rusqlite::Error) -> String {
+    note("sqlite_error");
     "Memória local indisponível; verifique o banco, permissões e espaço livre. Nenhum conteúdo foi registrado no log.".into()
 }
 fn fingerprint(s: &str) -> String {
@@ -106,6 +151,8 @@ pub fn database_path(c: &Caminhos) -> Result<PathBuf, String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Options {
+    #[serde(default)]
+    pub auto_consolidation: bool,
     pub retrieval: bool,
     pub extraction: bool,
     pub token_budget: usize,
@@ -169,9 +216,15 @@ impl Store {
         if version > VERSION {
             return Err("Banco criado por versão mais recente; atualize o aplicativo.".into());
         }
+        if version > 0 && version < VERSION {
+            pre_migration_backup(&db, path, version)?;
+        }
         for v in version..VERSION {
             let tx = db.transaction().map_err(error)?;
-            tx.execute_batch(MIGRATIONS[v as usize]).map_err(error)?;
+            tx.execute_batch(MIGRATIONS[v as usize]).map_err(|e| {
+                note("migration_failure");
+                error(e)
+            })?;
             tx.execute(
                 "INSERT INTO schema_migrations VALUES(?1,?2)",
                 params![v + 1, now()],
@@ -208,6 +261,43 @@ impl Store {
         self.db.execute("INSERT INTO identity_profile VALUES(1,?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,personality=excluded.personality,instructions=excluded.instructions,updated_at=excluded.updated_at",params![profile.name.trim(),profile.description,profile.personality,profile.instructions,now()]).map_err(error)?;
         Ok(())
     }
+    fn event(&self, code: &str, amount: i64, elapsed_ms: f64) -> Result<(), String> {
+        self.db
+            .execute(
+                "INSERT INTO diagnostics(code,amount,elapsed_ms,created_at) VALUES(?1,?2,?3,?4)",
+                params![code, amount, elapsed_ms, now()],
+            )
+            .map_err(error)?;
+        self.db.execute("DELETE FROM diagnostics WHERE id NOT IN (SELECT id FROM diagnostics ORDER BY id DESC LIMIT 200)",[]).map_err(error)?;
+        Ok(())
+    }
+    fn technical(&self) -> Result<Value, String> {
+        let mut q=self.db.prepare("SELECT code,count(*),sum(amount),avg(elapsed_ms),max(elapsed_ms) FROM diagnostics GROUP BY code ORDER BY code").map_err(error)?;
+        let counters=q.query_map([],|r|Ok(json!({"code":sanitize_code(&r.get::<_,String>(0)?),"events":r.get::<_,i64>(1)?,"amount":r.get::<_,i64>(2)?,"mean_ms":r.get::<_,f64>(3)?,"max_ms":r.get::<_,f64>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+        let runtime = RUNTIME_DIAGNOSTICS
+            .lock()
+            .map(|d| json!(*d))
+            .unwrap_or(json!({}));
+        Ok(
+            json!({"format":"lucille-technical-v1","schema":VERSION,"counters":counters,"runtime":runtime,"auto_enabled":self.options()?.auto_consolidation,"auto_paused":AUTO_PAUSED.load(Ordering::SeqCst),"active_generations":ACTIVE_CHATS.load(Ordering::SeqCst),"deferred_messages":std::fs::read_dir(self.path.parent().unwrap().join("pending-records")).map(|r|r.flatten().filter(|e|e.path().extension().is_some_and(|x|x=="json")).count()).unwrap_or(0)}),
+        )
+    }
+    fn technical_export(&self) -> Result<PathBuf, String> {
+        let dir = self.path.parent().unwrap().join("technical-reports");
+        std::fs::create_dir_all(&dir).map_err(|_| "Falha ao criar pasta técnica privada.")?;
+        let path = dir.join(format!(
+            "technical-memory-report-{}.json",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(now())
+        ));
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .map_err(|_| "Falha ao criar relatório técnico.")?;
+        serde_json::to_writer_pretty(file, &self.technical()?)
+            .map_err(|_| "Falha ao gravar relatório técnico.")?;
+        Ok(path)
+    }
     fn dashboard(&self) -> Result<Value, String> {
         let mut states = serde_json::Map::new();
         for state in STATES {
@@ -226,16 +316,29 @@ impl Store {
         let maintenance=self.db.query_row("SELECT state,processed,updated_at FROM maintenance WHERE id=1",[],|r|Ok(json!({"state":r.get::<_,String>(0)?,"processed":r.get::<_,i64>(1)?,"date":r.get::<_,i64>(2)?}))).map_err(error)?;
         let pending:i64=self.db.query_row("SELECT count(*) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' AND m.ordinal>coalesce(c.last_ordinal,-1)",[],|r|r.get(0)).map_err(error)?;
         Ok(
-            json!({"states":states,"recent":recent,"maintenance":maintenance,"pending_messages":pending,"running":CONSOLIDATING.load(Ordering::SeqCst)}),
+            json!({"states":states,"recent":recent,"maintenance":maintenance,"pending_messages":pending,"running":CONSOLIDATING.load(Ordering::SeqCst),"technical":self.technical()?,"extraction_states":self.processing_states()?}),
         )
+    }
+    fn processing_states(&self) -> Result<Value, String> {
+        let mut q = self
+            .db
+            .prepare("SELECT state,count(*) FROM processing GROUP BY state")
+            .map_err(error)?;
+        let rows = q
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(error)?
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(error)?;
+        Ok(json!(rows))
     }
     fn options(&self) -> Result<Options, String> {
         self.db
             .query_row(
-                "SELECT retrieval,extraction,token_budget,project_id FROM settings WHERE id=1",
+                "SELECT retrieval,extraction,token_budget,project_id,auto_consolidation FROM settings WHERE id=1",
                 [],
                 |r| {
                     Ok(Options {
+                        auto_consolidation:r.get(4)?,
                         retrieval: r.get(0)?,
                         extraction: r.get(1)?,
                         token_budget: r.get::<_, u32>(2)? as usize,
@@ -249,7 +352,7 @@ impl Store {
         if !(128..=4096).contains(&o.token_budget) {
             return Err("Orçamento deve estar entre 128 e 4096 tokens estimados.".into());
         }
-        self.db.execute("UPDATE settings SET retrieval=?1,extraction=?2,token_budget=?3,project_id=?4 WHERE id=1",params![o.retrieval,o.extraction,o.token_budget as i64,o.project_id]).map_err(error)?;
+        self.db.execute("UPDATE settings SET retrieval=?1,extraction=?2,token_budget=?3,project_id=?4,auto_consolidation=?5 WHERE id=1",params![o.retrieval,o.extraction,o.token_budget as i64,o.project_id,o.auto_consolidation]).map_err(error)?;
         Ok(())
     }
     fn list(
@@ -366,7 +469,47 @@ impl Store {
         )
         .map_err(error)?;
         tx.commit().map_err(error)?;
+        self.event(
+            if duplicate.is_some() {
+                "candidate_deduplicated"
+            } else {
+                "memory_saved"
+            },
+            1,
+            0.0,
+        )?;
         Ok(saved)
+    }
+    fn approve(&mut self, id: i64, replace: bool) -> Result<(), String> {
+        let tx = self.db.savepoint().map_err(error)?;
+        let (key, project): (String, Option<i64>) = tx
+            .query_row(
+                "SELECT fact_key,project_id FROM memories WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(error)?;
+        if !key.is_empty() {
+            let others:i64=tx.query_row("SELECT count(*) FROM memories WHERE id<>?1 AND fact_key=?2 AND project_id IS ?3 AND state IN ('active','candidate','conflict')",params![id,key,project],|r|r.get(0)).map_err(error)?;
+            if others > 0 && !replace {
+                return Err("Há versões conflitantes. Confirme explicitamente a substituição das anteriores.".into());
+            }
+            if replace {
+                tx.execute("UPDATE memories SET state='obsolete',updated_at=?4 WHERE id<>?1 AND fact_key=?2 AND project_id IS ?3",params![id,key,project,now()]).map_err(error)?;
+            }
+        }
+        tx.execute(
+            "UPDATE memories SET state='active',updated_at=?2 WHERE id=?1",
+            params![id, now()],
+        )
+        .map_err(error)?;
+        tx.execute(
+            "INSERT INTO change_history(memory_id,action,created_at) VALUES(?1,'approved',?2)",
+            params![id, now()],
+        )
+        .map_err(error)?;
+        tx.commit().map_err(error)?;
+        self.event("memory_approved", 1, 0.0)
     }
     fn delete(&mut self, id: i64) -> Result<(), String> {
         let tx = self.db.transaction().map_err(error)?;
@@ -462,45 +605,95 @@ impl Store {
         role: &str,
         text: &str,
     ) -> Result<(), String> {
-        if !["user", "assistant"].contains(&role) || has_secret(text) || text.len() > 64000 {
+        if !["user", "assistant"].contains(&role) || private_for_memory(text) || text.len() > 64000
+        {
+            self.event("record_skipped_private_or_oversized", 1, 0.0)?;
             return Ok(());
         }
-        let project = self.options()?.project_id;
-        let tx = self.db.transaction().map_err(error)?;
-        tx.execute("INSERT INTO conversations VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at",params![conversation,if has_secret(title){"Conversa"}else{title},now(),project]).map_err(error)?;
-        tx.execute("INSERT INTO messages VALUES(?1,?2,?3,?4,?5) ON CONFLICT(conversation_id,ordinal) DO UPDATE SET content=excluded.content",params![conversation,ordinal,role,text,now()]).map_err(error)?;
-        tx.commit().map_err(error)?;
-        let o = self.options()?;
-        if role == "user" && o.extraction {
-            let project_id: Option<i64> = self
-                .db
-                .query_row(
-                    "SELECT project_id FROM conversations WHERE id=?1",
-                    [conversation],
-                    |r| r.get(0),
-                )
-                .map_err(error)?;
-            if let Some(kind) = classify(text) {
-                self.put(
-                    None,
-                    &Input {
-                        kind: kind.into(),
-                        content: text.into(),
-                        project_id,
-                        fact_key: extract_key(text),
-                        state: "candidate".into(),
-                        importance: 3,
-                    },
-                    "user",
-                    Some((conversation, ordinal)),
-                )?;
-            }
+        let fp = fingerprint(text);
+        let prior: Option<String> = self
+            .db
+            .query_row(
+                "SELECT fingerprint FROM processing WHERE conversation_id=?1 AND ordinal=?2",
+                params![conversation, ordinal],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(error)?;
+        if prior.as_deref() == Some(&fp) {
+            self.event("record_duplicate", 1, 0.0)?;
+            return Ok(());
         }
-        Ok(())
+        // Recording, candidate extraction and its status share one rollback boundary.
+        self.db
+            .execute_batch("SAVEPOINT record_message")
+            .map_err(error)?;
+        let result = (|| -> Result<(), String> {
+            let project = self.options()?.project_id;
+            self.db.execute("INSERT INTO conversations VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at",params![conversation,if has_secret(title){"Conversa"}else{title},now(),project]).map_err(error)?;
+            self.db.execute("INSERT INTO messages VALUES(?1,?2,?3,?4,?5) ON CONFLICT(conversation_id,ordinal) DO UPDATE SET content=excluded.content",params![conversation,ordinal,role,text,now()]).map_err(error)?;
+            let o = self.options()?;
+            let mut state = if role != "user" {
+                "assistant_not_extracted"
+            } else if !o.extraction {
+                "extraction_disabled"
+            } else {
+                "no_durable_information"
+            };
+            if role == "user" && o.extraction {
+                let project_id: Option<i64> = self
+                    .db
+                    .query_row(
+                        "SELECT project_id FROM conversations WHERE id=?1",
+                        [conversation],
+                        |r| r.get(0),
+                    )
+                    .map_err(error)?;
+                if let Some(kind) = classify(text) {
+                    let mid = self.put(
+                        None,
+                        &Input {
+                            kind: kind.into(),
+                            content: text.into(),
+                            project_id,
+                            fact_key: extract_key(text),
+                            state: "candidate".into(),
+                            importance: 3,
+                        },
+                        "user",
+                        Some((conversation, ordinal)),
+                    )?;
+                    state = if mid == 0 {
+                        "rejected_previously"
+                    } else {
+                        "candidate_available"
+                    };
+                }
+            }
+            self.db.execute("INSERT INTO processing VALUES(?1,?2,?3,?4,?5) ON CONFLICT(conversation_id,ordinal) DO UPDATE SET fingerprint=excluded.fingerprint,state=excluded.state,updated_at=excluded.updated_at",params![conversation,ordinal,fp,state,now()]).map_err(error)?;
+            self.event(state, 1, 0.0)?;
+            Ok(())
+        })();
+        if result.is_ok() {
+            self.db
+                .execute_batch("RELEASE record_message")
+                .map_err(error)?;
+        } else {
+            self.db
+                .execute_batch("ROLLBACK TO record_message; RELEASE record_message")
+                .map_err(error)?;
+        }
+        result
     }
     fn retrieve(&self, query: &str, conversation: &str) -> Result<Option<Value>, String> {
+        let started = Instant::now();
         let o = self.options()?;
         if !o.retrieval || has_secret(query) {
+            self.event(
+                "retrieval_disabled_or_private",
+                0,
+                started.elapsed().as_secs_f64() * 1000.0,
+            )?;
             return Ok(None);
         }
         let fts = search_terms(query);
@@ -534,6 +727,15 @@ impl Store {
         if let Some(v) = context.as_mut() {
             v["_lucille_ids"] = json!(ids);
         }
+        self.event(
+            if ids.is_empty() {
+                "retrieval_no_match_or_budget"
+            } else {
+                "retrieval_selected"
+            },
+            ids.len() as i64,
+            started.elapsed().as_secs_f64() * 1000.0,
+        )?;
         Ok(context)
     }
     fn backup_dir(&self) -> PathBuf {
@@ -575,6 +777,8 @@ impl Store {
             "rejected_memories",
             "maintenance",
             "memory_sequence",
+            "processing",
+            "diagnostics",
         ]
         .iter()
         .enumerate()
@@ -635,6 +839,9 @@ impl Store {
             .map_err(error)?
             .run_to_completion(64, Duration::from_millis(5), None)
             .map_err(error)?;
+        dest.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+            .map_err(error)?;
+        drop(dest);
         validate_backup(&path)?;
         Ok(name)
     }
@@ -661,6 +868,12 @@ impl Store {
         if validate_backup(&p)? != digest {
             return Err("Backup mudou após a validação; valide novamente.".into());
         }
+        let high_water: i64 = self
+            .db
+            .query_row("SELECT next_id FROM memory_sequence WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .map_err(error)?;
         let safety = self.backup()?;
         let source = Connection::open_with_flags(p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(error)?;
@@ -677,7 +890,10 @@ impl Store {
             .map_err(error)?;
         for v in version..VERSION {
             let tx = self.db.transaction().map_err(error)?;
-            tx.execute_batch(MIGRATIONS[v as usize]).map_err(error)?;
+            tx.execute_batch(MIGRATIONS[v as usize]).map_err(|e| {
+                note("migration_failure");
+                error(e)
+            })?;
             tx.execute(
                 "INSERT INTO schema_migrations VALUES(?1,?2)",
                 params![v + 1, now()],
@@ -687,6 +903,12 @@ impl Store {
                 .map_err(error)?;
             tx.commit().map_err(error)?;
         }
+        self.db
+            .execute(
+                "UPDATE memory_sequence SET next_id=max(next_id,?1) WHERE id=1",
+                [high_water],
+            )
+            .map_err(error)?;
         Ok(safety)
     }
     fn stats(&self) -> Result<Value, String> {
@@ -702,13 +924,36 @@ impl Store {
         )
     }
     fn consolidate_one(&mut self) -> Result<bool, String> {
+        self.consolidate_batch(20)
+    }
+    fn consolidate_batch(&mut self, limit: usize) -> Result<bool, String> {
+        self.consolidate_batch_mode(limit, false)
+    }
+    fn consolidate_batch_mode(&mut self, limit: usize, durable_only: bool) -> Result<bool, String> {
+        self.db
+            .execute_batch("SAVEPOINT consolidation_batch")
+            .map_err(error)?;
+        let result = self.consolidate_inner(limit.clamp(1, 20), durable_only);
+        if result.is_ok() {
+            self.db
+                .execute_batch("RELEASE consolidation_batch")
+                .map_err(error)?;
+        } else {
+            self.db
+                .execute_batch("ROLLBACK TO consolidation_batch; RELEASE consolidation_batch")
+                .map_err(error)?;
+            self.event("consolidation_failure", 1, 0.0)?;
+        }
+        result
+    }
+    fn consolidate_inner(&mut self, limit: usize, durable_only: bool) -> Result<bool, String> {
         let next:Option<(String,i64)>=self.db.query_row("SELECT m.conversation_id,coalesce(c.last_ordinal,-1) FROM messages m LEFT JOIN consolidation c ON c.conversation_id=m.conversation_id WHERE m.role='user' AND m.ordinal>coalesce(c.last_ordinal,-1) ORDER BY m.conversation_id,m.ordinal LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(error)?;
         let Some((id, after)) = next else {
             return Ok(false);
         };
-        let mut q=self.db.prepare("SELECT ordinal,content FROM messages WHERE conversation_id=?1 AND role='user' AND ordinal>?2 ORDER BY ordinal LIMIT 20").map_err(error)?;
+        let mut q=self.db.prepare("SELECT ordinal,content FROM messages WHERE conversation_id=?1 AND role='user' AND ordinal>?2 ORDER BY ordinal LIMIT ?3").map_err(error)?;
         let rows = q
-            .query_map(params![id, after], |r| {
+            .query_map(params![id, after, limit as i64], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
             })
             .map_err(error)?
@@ -734,7 +979,10 @@ impl Store {
                     |r| r.get(0),
                 )
                 .map_err(error)?;
-            if !rejected {
+            if !rejected
+                && !private_for_memory(&text)
+                && (!durable_only || classify(&text).is_some())
+            {
                 filtered.push((ordinal, text));
             }
         }
@@ -782,7 +1030,7 @@ impl Store {
             }
         }
         let mid = self.put(None, &input, "extractive", Some((&id, last)))?;
-        let tx = self.db.transaction().map_err(error)?;
+        let tx = self.db.savepoint().map_err(error)?;
         for (ordinal, _) in rows {
             if mid == 0 {
                 break;
@@ -795,6 +1043,29 @@ impl Store {
     }
 }
 
+fn pre_migration_backup(db: &Connection, path: &Path, version: i64) -> Result<PathBuf, String> {
+    let dir = path
+        .parent()
+        .ok_or("Pasta privada inválida.")?
+        .join("backups");
+    std::fs::create_dir_all(&dir)
+        .map_err(|_| "Não foi possível criar backup pré-migração; atualização cancelada.")?;
+    let backup = dir.join(format!(
+        "snapshot-premigration-v{version}-{}.sqlite3",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(now())
+    ));
+    let mut dest = Connection::open(&backup).map_err(error)?;
+    rusqlite::backup::Backup::new(db, &mut dest)
+        .map_err(error)?
+        .run_to_completion(64, Duration::from_millis(5), None)
+        .map_err(error)?;
+    dest.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .map_err(error)?;
+    drop(dest);
+    validate_backup(&backup).map_err(|_| "Backup pré-migração inválido; atualização cancelada.")?;
+    note("migration_backup_validated");
+    Ok(backup)
+}
 fn validate_backup(path: &Path) -> Result<String, String> {
     if std::fs::metadata(path)
         .map_err(|_| "Backup indisponível.")?
@@ -815,7 +1086,7 @@ fn validate_backup(path: &Path) -> Result<String, String> {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(error)?;
-    if integrity != "ok" || !(2..=VERSION).contains(&version) {
+    if integrity != "ok" || !(1..=VERSION).contains(&version) {
         return Err("Backup incompatível ou corrompido.".into());
     }
     // Require precisely this application's schema, including triggers. No imported SQL is executed.
@@ -906,13 +1177,66 @@ pub fn has_secret(text: &str) -> bool {
                 && w.chars().any(|c| c.is_ascii_alphabetic())
         })
 }
+fn private_for_memory(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    has_secret(text)
+        || [
+            "cpf",
+            "passaporte",
+            "meu endereço",
+            "meu diagnóstico",
+            "minha doença",
+            "minha senha",
+            "cartão de crédito",
+            "número da conta",
+            "telefone pessoal",
+        ]
+        .iter()
+        .any(|m| lower.contains(m))
+        || text.contains('@')
+        || text
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|n| n.len() >= 11)
+}
+fn durable_text(text: &str) -> String {
+    let mut s = text.trim().to_lowercase();
+    for prefix in ["lucille,", "assistente,"] {
+        if let Some(t) = s.strip_prefix(prefix) {
+            s = t.trim().into();
+            break;
+        }
+    }
+    s
+}
 fn classify(text: &str) -> Option<&'static str> {
-    if text.len() < 12 || text.len() > 8000 || has_secret(text) {
+    if text.len() < 12 || text.len() > 8000 || private_for_memory(text) {
         return None;
     }
-    let s = text.trim().to_lowercase();
+    let s = durable_text(text);
+    if [
+        "talvez ",
+        "acho que ",
+        "imagino ",
+        "se eu ",
+        "poderia ",
+        "será que ",
+    ]
+    .iter()
+    .any(|p| s.starts_with(p))
+    {
+        return None;
+    }
+    if s.starts_with("o nome do meu projeto")
+        || s.starts_with("meu projeto se chama")
+        || s.starts_with("agora meu projeto se chama")
+        || s.starts_with("o novo nome do meu projeto")
+    {
+        return Some("fact");
+    }
     [
         ("prefiro ", "preference"),
+        ("passei a preferir ", "preference"),
+        ("agora prefiro ", "preference"),
         ("minha preferência", "preference"),
         ("meu computador", "hardware"),
         ("meu hardware", "hardware"),
@@ -920,9 +1244,12 @@ fn classify(text: &str) -> Option<&'static str> {
         ("decisão:", "decision"),
         ("resolvi ", "solution"),
         ("solução:", "solution"),
+        ("meu objetivo é ", "goal"),
         ("objetivo:", "goal"),
+        ("preciso concluir ", "task"),
         ("tarefa:", "task"),
         ("restrição:", "constraint"),
+        ("instrução permanente autorizada:", "constraint"),
         ("projeto:", "project"),
         ("lembre que ", "fact"),
         ("lembre-se de ", "fact"),
@@ -931,8 +1258,20 @@ fn classify(text: &str) -> Option<&'static str> {
     .find_map(|(p, k)| s.starts_with(p).then_some(*k))
 }
 fn extract_key(text: &str) -> String {
-    let s = text.to_lowercase();
-    if s.starts_with("prefiro ")
+    let s = durable_text(text);
+    if s.contains("nome do meu projeto fictício") || s.contains("projeto fictício se chama") {
+        "fictional-project-name".into()
+    } else if s.contains("nome do meu projeto") || s.contains("meu projeto se chama") {
+        "project-name".into()
+    } else if (s.starts_with("prefiro ")
+        || s.starts_with("passei a preferir ")
+        || s.starts_with("agora prefiro "))
+        && (s.contains("editor ") || s.contains("editor:"))
+    {
+        "preferred-editor".into()
+    } else if (s.starts_with("prefiro ")
+        || s.starts_with("agora prefiro ")
+        || s.starts_with("passei a preferir "))
         && (s.contains("português") || s.contains("inglês") || s.contains("espanhol"))
     {
         "preferred-language".into()
@@ -1008,10 +1347,148 @@ pub fn record(
     role: &str,
     text: &str,
 ) -> Result<(), String> {
-    with_chat_store(c, |s| {
-        s.record(conversation, title, ordinal as i64, role, text)
-    })
+    let path = database_path(c)?;
+    if let Ok(_guard) = ACCESS.try_lock() {
+        let result = Store::open(&path)
+            .and_then(|mut s| s.record(conversation, title, ordinal as i64, role, text));
+        if result.is_err() && !private_for_memory(text) && text.len() <= 64000 {
+            let _ = write_pending(&path, conversation, ordinal);
+            note("record_retry_after_error");
+        }
+        return result;
+    }
+    if private_for_memory(text) || text.len() > 64000 || !["user", "assistant"].contains(&role) {
+        note("record_skipped_private_or_oversized");
+        return Ok(());
+    }
+    write_pending(&path, conversation, ordinal)?;
+    note("record_deferred");
+    Ok(())
 }
+fn pending_dir(path: &Path) -> Result<PathBuf, String> {
+    let parent = path.parent().ok_or("Pasta de memória inválida.")?;
+    let dir = parent.join("pending-records");
+    std::fs::create_dir_all(&dir).map_err(|_| "Não foi possível persistir retry da memória.")?;
+    if !dir
+        .canonicalize()
+        .map_err(|_| "Pasta de retry indisponível.")?
+        .starts_with(
+            parent
+                .canonicalize()
+                .map_err(|_| "Pasta privada indisponível.")?,
+        )
+    {
+        return Err("Pasta de retry fora da memória privada.".into());
+    }
+    Ok(dir)
+}
+fn write_pending(path: &Path, conversation: &str, ordinal: usize) -> Result<(), String> {
+    use std::io::Write;
+    if conversation.is_empty()
+        || conversation.len() > 100
+        || !conversation
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        || ordinal > 1000000
+    {
+        return Err("Referência de retry inválida.".into());
+    }
+    let file = pending_dir(path)?.join(format!("{conversation}-{ordinal}.json"));
+    // Only a pointer to the already saved JSON, never a second plaintext message copy.
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&file)
+    {
+        Ok(mut f) => {
+            let data = json!({"conversation":conversation,"ordinal":ordinal}).to_string();
+            f.write_all(data.as_bytes())
+                .map_err(|_| "Falha ao persistir retry.")?;
+            f.sync_all().map_err(|_| "Falha ao sincronizar retry.")?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err("Falha ao criar retry privado.".into()),
+    }
+    Ok(())
+}
+fn replay_pending(c: &Caminhos, s: &mut Store) -> Result<usize, String> {
+    let dir = pending_dir(&s.path)?;
+    let mut count = 0;
+    for entry in std::fs::read_dir(dir)
+        .map_err(|_| "Fila privada indisponível.")?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .take(4)
+    {
+        if ACTIVE_CHATS.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        if replay_one(c, s, &entry.path())? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn replay_one(c: &Caminhos, s: &mut Store, path: &Path) -> Result<bool, String> {
+    if path.is_symlink()
+        || std::fs::symlink_metadata(path)
+            .map(|m| m.len() > 4096)
+            .unwrap_or(true)
+    {
+        note("retry_invalid_reference");
+        let _ = std::fs::rename(path, path.with_extension("failed"));
+        return Ok(false);
+    }
+    let data: Value = match std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+    {
+        Some(v) => v,
+        None => {
+            note("retry_invalid_reference");
+            let _ = std::fs::rename(&path, path.with_extension("failed"));
+            return Ok(false);
+        }
+    };
+    let id = data["conversation"].as_str().unwrap_or("");
+    let ordinal = data["ordinal"].as_u64().unwrap_or(u64::MAX);
+    let original = if !id.is_empty()
+        && id.len() <= 100
+        && ordinal <= 1000000
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && std::fs::metadata(c.runtime.join("agente/sessoes").join(format!("{id}.json")))
+            .map(|m| m.len() <= 8 * 1024 * 1024)
+            .unwrap_or(false)
+    {
+        crate::agente::abrir(c, id).ok()
+    } else {
+        None
+    };
+    let message = original
+        .as_ref()
+        .and_then(|v| v.mensagens.get(ordinal as usize));
+    if let (Some(session), Some(message)) = (original.as_ref(), message) {
+        s.record(
+            id,
+            &session.titulo,
+            ordinal as i64,
+            &message.papel,
+            &message.texto,
+        )?;
+        std::fs::remove_file(&path).map_err(|_| {
+            "Registro salvo; referência pendente será deduplicada na próxima tentativa."
+        })?;
+        note("record_deferred_flushed");
+        return Ok(true);
+    } else {
+        note("retry_source_missing");
+        let _ = std::fs::rename(&path, path.with_extension("failed"));
+    }
+
+    Ok(false)
+}
+
 pub fn retrieve(c: &Caminhos, query: &str, conversation: &str) -> Result<Option<Value>, String> {
     with_chat_store(c, |s| s.retrieve(query, conversation))
 }
@@ -1021,9 +1498,10 @@ fn with_chat_store<T>(
     c: &Caminhos,
     f: impl FnOnce(&mut Store) -> Result<T, String>,
 ) -> Result<T, String> {
-    let _guard = ACCESS
-        .try_lock()
-        .map_err(|_| "Memória ocupada por manutenção; o histórico JSON permanece disponível.")?;
+    let _guard = ACCESS.try_lock().map_err(|_| {
+        note("retrieval_busy");
+        "Memória ocupada por manutenção; o histórico JSON permanece disponível."
+    })?;
     let mut store = Store::open(&database_path(c)?)?;
     f(&mut store)
 }
@@ -1069,9 +1547,11 @@ pub fn identity_for_chat(c: &Caminhos) -> Result<crate::identity::Profile, Strin
     Ok(profile.unwrap_or_else(|| legacy_profile(c)))
 }
 
-/// One allowlisted UI API. No arbitrary SQL, filesystem paths, HTTP, Git or shell operations.
-pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> {
-    if action == "consolidate" {
+fn run_consolidation(c: &Caminhos, automatic: bool) -> Result<Value, String> {
+    if ACTIVE_CHATS.load(Ordering::SeqCst) > 0 {
+        return Ok(json!({"processed":0,"deferred":true}));
+    }
+    {
         if CONSOLIDATING.swap(true, Ordering::SeqCst) {
             return Err("Consolidação já está em andamento.".into());
         }
@@ -1093,11 +1573,22 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
                 .map_err(error)?;
                 Ok(())
             })?;
-            for _ in 0..20 {
-                if STOP_CONSOLIDATION.load(Ordering::Relaxed) {
+            for _ in 0..if automatic { 1 } else { 20 } {
+                if STOP_CONSOLIDATION.load(Ordering::Relaxed)
+                    || ACTIVE_CHATS.load(Ordering::SeqCst) > 0
+                {
                     break;
                 }
-                if !with_store(c, |s| s.consolidate_one())? {
+                if !with_store(c, |s| {
+                    if automatic
+                        && (!s.options()?.auto_consolidation
+                            || !s.options()?.extraction
+                            || AUTO_PAUSED.load(Ordering::SeqCst))
+                    {
+                        return Ok(false);
+                    }
+                    s.consolidate_batch_mode(if automatic { 5 } else { 20 }, automatic)
+                })? {
                     break;
                 }
                 count += 1;
@@ -1132,6 +1623,76 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
         result?;
         return Ok(json!({"processed":count,"interrupted":interrupted}));
     }
+}
+/// Called by an idle timer; never starts inference or holds locks while streaming.
+pub fn idle_tick(c: &Caminhos) -> Result<(), String> {
+    if ACTIVE_CHATS.load(Ordering::SeqCst) > 0 {
+        return Ok(());
+    }
+    let path = database_path(c)?;
+    {
+        let Ok(_guard) = ACCESS.try_lock() else {
+            return Ok(());
+        };
+        // Do not create a production database merely because the application opened.
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut s = Store::open(&path)?;
+        replay_pending(c, &mut s)?;
+        let pending:bool=s.db.query_row("SELECT EXISTS(SELECT 1 FROM conversations c LEFT JOIN consolidation k ON k.conversation_id=c.id WHERE EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.role='user' AND m.ordinal>coalesce(k.last_ordinal,-1)))",[],|r|r.get(0)).map_err(error)?;
+        if !pending {
+            return Ok(());
+        }
+        let o = s.options()?;
+        if !o.auto_consolidation || !o.extraction || AUTO_PAUSED.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+    }
+    run_consolidation(c, true)?;
+    Ok(())
+}
+pub fn start_worker(c: &Caminhos) {
+    let c = Caminhos {
+        projeto: c.projeto.clone(),
+        runtime: c.runtime.clone(),
+    };
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(2));
+        if idle_tick(&c).is_err() {
+            note("idle_worker_failure");
+        }
+    });
+}
+/// One allowlisted UI API. No arbitrary SQL, filesystem paths, HTTP, Git or shell operations.
+pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> {
+    if action == "technical" || action == "technical_export" {
+        let report=with_store(c,|s|s.technical()).unwrap_or_else(|_|json!({"format":"lucille-technical-v1","schema":VERSION,"store_unavailable":true,"runtime":RUNTIME_DIAGNOSTICS.lock().map(|d|json!(*d)).unwrap_or(json!({}))}));
+        if action == "technical" {
+            return Ok(report);
+        }
+        let path = database_path(c)?;
+        let dir = path
+            .parent()
+            .ok_or("Pasta privada inválida.")?
+            .join("technical-reports");
+        std::fs::create_dir_all(&dir).map_err(|_| "Pasta técnica indisponível.")?;
+        let file = dir.join(format!(
+            "technical-memory-report-{}.json",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(now())
+        ));
+        let out = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&file)
+            .map_err(|_| "Falha ao criar relatório técnico.")?;
+        serde_json::to_writer_pretty(out, &report)
+            .map_err(|_| "Falha ao salvar relatório técnico.")?;
+        return Ok(json!({"path":file}));
+    }
+    if action == "consolidate" {
+        return run_consolidation(c, false);
+    }
     with_store(c, |s| match action {
         "identity_get" => Ok(
             json!({"profile":s.profile()?.unwrap_or_else(||legacy_profile(c)),"saved":s.profile()?.is_some(),"legacy_present":legacy_present(c)}),
@@ -1143,6 +1704,15 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
             Ok(json!(true))
         }
         "dashboard" => s.dashboard(),
+        "technical" => s.technical(),
+        "technical_export" => Ok(json!({"path":s.technical_export()?})),
+        "approve" => {
+            s.approve(
+                args["id"].as_i64().ok_or("ID inválido.")?,
+                args["replace"].as_bool().unwrap_or(false),
+            )?;
+            Ok(json!(true))
+        }
         "used" => {
             let ids = args["ids"].as_array().ok_or("IDs inválidos.")?;
             if ids.len() > 60 {
@@ -1181,6 +1751,7 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
         }
         "options" => {
             s.save_options(&serde_json::from_value(args).map_err(|_| "Opções inválidas.")?)?;
+            AUTO_PAUSED.store(false, Ordering::SeqCst);
             Ok(json!(true))
         }
         "project_save" => {

@@ -25,6 +25,8 @@ pub struct Mensagem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memoria_ids: Vec<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memoria_recuperacao_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metricas: Option<crate::response_metrics::GenerationMetrics>,
     /// "user", "assistant" ou "tool".
     pub papel: String,
@@ -365,6 +367,7 @@ pub fn responder(
     cancelar: &AtomicBool,
     saida: &dyn Saida,
 ) -> Result<(), String> {
+    let _memory_activity = crate::memory::chat_started();
     let mut s = abrir(c, id)?;
     let imagens = anexos
         .iter()
@@ -406,6 +409,7 @@ pub fn refazer(
     cancelar: &AtomicBool,
     saida: &dyn Saida,
 ) -> Result<(), String> {
+    let _memory_activity = crate::memory::chat_started();
     let mut s = abrir(c, id)?;
     let ultima = s
         .mensagens
@@ -444,6 +448,7 @@ fn rodar(
         .find(|m| m.papel == "user")
         .map(|m| m.texto.as_str())
         .unwrap_or("");
+    let memory_started = std::time::Instant::now();
     let memory = match crate::memory::retrieve(c, query, &s.id) {
         Ok(v) => v,
         Err(_) => {
@@ -451,6 +456,7 @@ fn rodar(
             None
         }
     };
+    let memory_elapsed = memory_started.elapsed().as_secs_f64() * 1000.0;
     garantir_inferencia(c, saida)?;
     for _ in 0..RODADAS_MAX {
         if cancelar.load(Ordering::Relaxed) {
@@ -474,13 +480,17 @@ fn rodar(
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_i64).collect())
             .unwrap_or_default();
-        saida.evento("memorias", json!({"ids":memoria_ids}));
+        saida.evento(
+            "memorias",
+            json!({"ids":memoria_ids,"retrieval_ms":memory_elapsed}),
+        );
         let r = transmitir(c, &mensagens, cancelar, saida)?;
         let chamadas = r.chamadas.clone();
         s.mensagens.push(Mensagem {
             papel: "assistant".into(),
             metricas: Some(r.metricas),
             memoria_ids,
+            memoria_recuperacao_ms: Some(memory_elapsed),
             texto: r.texto,
             raciocinio: (!r.raciocinio.is_empty()).then_some(r.raciocinio),
             chamadas: chamadas.clone(),

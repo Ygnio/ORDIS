@@ -447,7 +447,7 @@ async fn memory_action(c: State<'_, Ctx>, action: String, args: Value) -> Result
 
 #[tauri::command]
 fn memory_stop() {
-    memory::STOP_CONSOLIDATION.store(true, Ordering::Relaxed);
+    memory::stop();
 }
 
 fn main() {
@@ -458,6 +458,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    memory::start_worker(&caminhos);
     tauri::Builder::default()
         .manage::<Ctx>(Arc::new(App {
             caminhos,
