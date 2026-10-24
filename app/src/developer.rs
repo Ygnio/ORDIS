@@ -808,6 +808,26 @@ fn atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
     }
     Ok(())
 }
+fn move_new(from: &Path, to: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |p: &Path| {
+        p.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<u16>>()
+    };
+    if unsafe {
+        MoveFileExW(
+            wide(from).as_ptr(),
+            wide(to).as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err("Falha ao mover; destino não será sobrescrito.".into());
+    }
+    Ok(())
+}
 fn apply(
     c: &Caminhos,
     scope: &Scope,
@@ -862,7 +882,7 @@ fn apply(
             if dest.path.exists() {
                 return Err("Destino já existe.".into());
             }
-            fs::rename(&target.path, &dest.path).map_err(|_| "Falha ao mover caminho.")?;
+            move_new(&target.path, &dest.path)?;
         }
         "workspace_delete" => {
             if target.path.is_dir() {
@@ -1148,8 +1168,40 @@ fn inspection(c: &Caminhos, name: &str) -> Result<Value, String> {
         crate::win::is_running(*pid)
             && crate::win::creation_time(*pid).is_some_and(|v| (v - start).abs() < 0.01)
     });
+    let mut rows = own
+        .iter()
+        .filter(|(root, _, _)| root == &workspace)
+        .map(|(_, pid, _)| json!({"pid":pid,"scope":"approved child"}))
+        .collect::<Vec<_>>();
+    drop(own);
+    let root = PathBuf::from(&workspace);
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::nothing()
+            .with_cwd(sysinfo::UpdateKind::Always)
+            .with_exe(sysinfo::UpdateKind::Always),
+    );
+    for (pid, p) in sys.processes() {
+        let exe = p.exe().and_then(|p| p.canonicalize().ok());
+        let cwd = p.cwd().and_then(|p| p.canonicalize().ok());
+        if exe.as_ref().is_some_and(|p| p.starts_with(&root))
+            || cwd.as_ref().is_some_and(|p| p.starts_with(&root))
+        {
+            if !rows
+                .iter()
+                .any(|v| v["pid"].as_u64() == Some(pid.as_u32() as u64))
+            {
+                rows.push(json!({"pid":pid.as_u32(),"executable":exe,"cwd":cwd,"scope":"workspace executable or cwd"}));
+            }
+        }
+        if rows.len() >= 100 {
+            break;
+        }
+    }
     Ok(
-        json!({"processes":own.iter().filter(|(root,_,_)|root==&workspace).map(|(_,pid,_)|json!({"pid":pid,"scope":"child started by approved developer operation"})).collect::<Vec<_>>(),"scope":"Somente filhos iniciados pelo agente neste workspace; nenhum processo externo é alterado ou tem argumentos consultados."}),
+        json!({"processes":rows,"limit":100,"scope":"Filhos aprovados e processos com executável/cwd no workspace. Caminhos não acessíveis são omitidos; nenhum argumento, ambiente ou credencial é consultado. Nenhum processo é alterado."}),
     )
 }
 pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> {

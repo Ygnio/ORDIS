@@ -27,6 +27,7 @@ def validate(source,modules):
         if isinstance(n,ast.ClassDef):
             if n.keywords or len(n.bases)!=1 or ast.unparse(n.bases[0])!='unittest.TestCase':raise ValueError('Only unittest.TestCase classes are available')
         if isinstance(n,ast.Attribute):
+            if not isinstance(n.ctx,ast.Load):raise ValueError('Attribute mutation unavailable')
             owner=n.value.id if isinstance(n.value,ast.Name) else ''
             if n.attr.startswith('_') or not ((owner=='self' and n.attr in ASSERTS) or (owner=='unittest' and n.attr in {'main','TestCase'}) or (owner=='math' and n.attr in MATH) or (owner in modules and not n.attr.startswith('_'))):raise ValueError('Unsupported attribute access')
         if isinstance(n,ast.Import):
@@ -40,7 +41,11 @@ def execute(request):
     if not isinstance(sources,dict) or len(sources)>128 or entry not in sources:raise ValueError('Invalid approved source manifest')
     modules={name[:-3] for name in sources if name.endswith('.py') and name[:-3].isidentifier()}
     if set(modules)&{'sys','os','types','builtins','unittest','math'}:raise ValueError('Protected module name')
-    trees={name:validate(source,modules) for name,source in sources.items()}
+    class GuardAttributes(ast.NodeTransformer):
+        def visit_Attribute(self,node):
+            node=self.generic_visit(node)
+            return ast.copy_location(ast.Call(func=ast.Name(id='__lucille_getattr__',ctx=ast.Load()),args=[node.value,ast.Constant(node.attr)],keywords=[]),node)
+    trees={name:ast.fix_missing_locations(GuardAttributes().visit(validate(source,modules))) for name,source in sources.items()}
     loaded={};loading=set()
     def load(name):
         if name in loaded:return loaded[name]
@@ -48,7 +53,7 @@ def execute(request):
         loading.add(name)
         filename=name+'.py'
         module=types.ModuleType(name)
-        module.__dict__.update({'__builtins__':safe,'__file__':filename})
+        module.__dict__.update({'__builtins__':safe,'__file__':filename,'__lucille_getattr__':attribute})
         exec(compile(trees[filename],filename,'exec'),module.__dict__)
         loading.remove(name);loaded[name]=module
         return module
@@ -63,7 +68,15 @@ def execute(request):
     public_unittest=types.SimpleNamespace(TestCase=unittest.TestCase,
         main=lambda:unittest.main(module='__main__',argv=[entry]))
     public_math=types.SimpleNamespace(**{name:getattr(math,name) for name in MATH})
-    module=types.ModuleType('__main__');module.__dict__.update({'__builtins__':safe,'__file__':entry});sys.modules['__main__']=module
+    def attribute(obj,name):
+        # Validate object identity at runtime: variable names alone are not capabilities.
+        if name.startswith('_'):raise ValueError('Private attributes unavailable')
+        if obj is public_unittest and name in {'main','TestCase'}:return getattr(obj,name)
+        if obj is public_math and name in MATH:return getattr(obj,name)
+        if isinstance(obj,unittest.TestCase) and name in ASSERTS:return getattr(obj,name)
+        if isinstance(obj,types.ModuleType) and any(obj is m for m in loaded.values()):return getattr(obj,name)
+        raise ValueError('Attribute capability unavailable')
+    module=types.ModuleType('__main__');module.__dict__.update({'__builtins__':safe,'__file__':entry,'__lucille_getattr__':attribute});sys.modules['__main__']=module
     sys.argv=[entry]
     exec(compile(trees[entry],entry,'exec'),module.__dict__)
 

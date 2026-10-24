@@ -41,8 +41,8 @@ Nenhum modelo adicional, serviço externo ou biblioteca pesada foi adicionado.
   duração, truncamento e estado; saída incremental e cancelamento.
 * `developer_environment`: detecta Git, Python, Cargo, Rust, Node/npm, CMake, GCC,
   MSVC e PowerShell no PATH, sem executá-los ou instalá-los.
-* `developer_processes`: somente filhos iniciados pelo agente neste workspace,
-  identificados por PID e instante de criação; não enumera argumentos de outros
+* `developer_processes`: filhos aprovados (PID e criação) e processos com executável/cwd no workspace.
+  Caminhos indisponíveis são omitidos; não consulta cmdline ou ambiente de outros
   programas. `developer_diagnostics`: política e diagnósticos existentes.
 
 Limites configuráveis: edição 1 KB–8 MiB, leitura 512–128000 bytes,
@@ -54,7 +54,7 @@ e três chamadas idênticas por turno; execução é sequencial.
 
 Esta versão **não oferece shell geral nem sandbox de sistema operacional**.
 O Python admite funções puras, controle de fluxo, math e unittest, com imports
-locais a partir de snapshots aprovados. AST, builtins reduzidos e proxies de
+locais a partir de snapshots aprovados. AST, validação de atributos pela identidade real dos objetos, builtins reduzidos e proxies de
 math/unittest impedem imports dinâmicos, arquivos, rede, reflexão e subprocessos.
 `unittest.main()` usa apenas o módulo aprovado, sem nomes de testes/módulos externos.
 PowerShell admite somente Write-Output, Start-Sleep, throw e exit literais,

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,6 +28,18 @@ class RestrictedPython(unittest.TestCase):
         result=self.run_source('import math\nprint("ação",math.sqrt(9))')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertNotEqual(self.run_source('def broken(').returncode,0)
+
+    def test_module_name_rebinding_cannot_launder_trusted_objects(self):
+        r=self.run_source('import unittest\nleak=unittest.TestCase()\nleak=leak.assertLogs()',{'leak.py':'pass'})
+        self.assertNotEqual(r.returncode,0)
+        self.assertNotEqual(self.run_source('import math\nmath.pi=3').returncode,0)
+        with tempfile.TemporaryDirectory(prefix='lucille-escape-synthetic-') as temp:
+            marker=Path(temp)/'marker.txt'
+            (Path(temp)/'test_external.py').write_text('from pathlib import Path\nPath('+repr(str(marker))+').write_text("synthetic escape")',encoding='utf-8')
+            source='import unittest\ndef load_tests(leak,tests,pattern):\n return leak.discover('+repr(temp)+')\nunittest.main()'
+            r=self.run_source(source,{'leak.py':'pass'})
+            self.assertNotEqual(r.returncode,0)
+            self.assertFalse(marker.exists(),'Unapproved module was executed')
 
 @unittest.skipUnless(sys.platform=='win32','Windows AST runner')
 class RestrictedPowerShell(unittest.TestCase):
