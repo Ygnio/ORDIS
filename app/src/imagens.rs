@@ -5,7 +5,8 @@
 //! inferência, sobe o ComfyUI, gera, encerra o ComfyUI e restaura o Qwen se
 //! ele estava ligado. Tudo sob a trava de controle.
 use std::fs;
-use std::net::TcpStream;
+use std::io::Read;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -19,7 +20,6 @@ use sysinfo::System;
 use crate::controle::{self, Caminhos};
 use crate::modelos::{self, Imagem};
 
-const BASE: &str = "http://127.0.0.1:8188";
 const NEGATIVO_PADRAO: &str = "bad hands, bad anatomy, deformed, blurry, watermark, text";
 
 pub fn pasta_saida(c: &Caminhos) -> PathBuf {
@@ -55,8 +55,10 @@ fn validar(v: &Value, passos_padrao: u64) -> Result<Parametros, String> {
                 .ok_or_else(|| format!("{nome} fora dos limites.")),
         }
     };
-    let aleatoria = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().subsec_nanos()
-        as u64
+    let aleatoria = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
         ^ u64::from_str_radix(&controle::sufixo_unico()[8..], 16).unwrap_or(0);
     let p = Parametros {
         prompt: prompt.to_string(),
@@ -97,7 +99,10 @@ fn preencher(v: &mut Value, valores: &[(&str, Value)]) {
                 *v = valor.clone();
             } else if s.contains("{{") {
                 for (k, valor) in valores {
-                    let texto = valor.as_str().map(str::to_string).unwrap_or_else(|| valor.to_string());
+                    let texto = valor
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| valor.to_string());
                     *s = s.replace(&format!("{{{{{k}}}}}"), &texto);
                 }
             }
@@ -111,13 +116,23 @@ fn preencher(v: &mut Value, valores: &[(&str, Value)]) {
 fn fluxo_importado(c: &Caminhos, p: &Parametros, id: &str, m: &Imagem) -> Result<Value, String> {
     let texto = fs::read_to_string(modelos::pasta_fluxos(c).join(&m.fluxo))
         .map_err(|e| format!("Falha ao ler o fluxo {}: {e}", m.fluxo))?;
-    let mut grafo: Value = serde_json::from_str(&texto).map_err(|e| format!("Fluxo inválido: {e}"))?;
-    preencher(&mut grafo, &[
-        ("prompt", json!(p.prompt)), ("negativo", json!(p.negative)), ("seed", json!(p.seed)),
-        ("largura", json!(p.width)), ("altura", json!(p.height)), ("passos", json!(p.steps)),
-        ("cfg", json!(m.cfg)), ("sampler", json!(m.sampler)), ("scheduler", json!(m.scheduler)),
-        ("checkpoint", json!(m.checkpoint)),
-    ]);
+    let mut grafo: Value =
+        serde_json::from_str(&texto).map_err(|e| format!("Fluxo inválido: {e}"))?;
+    preencher(
+        &mut grafo,
+        &[
+            ("prompt", json!(p.prompt)),
+            ("negativo", json!(p.negative)),
+            ("seed", json!(p.seed)),
+            ("largura", json!(p.width)),
+            ("altura", json!(p.height)),
+            ("passos", json!(p.steps)),
+            ("cfg", json!(m.cfg)),
+            ("sampler", json!(m.sampler)),
+            ("scheduler", json!(m.scheduler)),
+            ("checkpoint", json!(m.checkpoint)),
+        ],
+    );
     // A saída precisa do prefixo do ORDIS para cair na pasta certa.
     for no in grafo.as_object_mut().ok_or("Fluxo inválido.")?.values_mut() {
         if no["class_type"] == "SaveImage" {
@@ -135,14 +150,19 @@ struct Nos {
 }
 
 fn nos(grafo: &Value) -> Result<Nos, String> {
-    let mut lista: Vec<(&String, &Value)> = grafo.as_object().ok_or("Fluxo inválido.")?.iter().collect();
+    let mut lista: Vec<(&String, &Value)> =
+        grafo.as_object().ok_or("Fluxo inválido.")?.iter().collect();
     // Ordem numérica dos ids, como o ComfyUI exporta.
     lista.sort_by_key(|(k, _)| (k.parse::<u64>().unwrap_or(u64::MAX), (*k).clone()));
     let achar = |f: &dyn Fn(&str) -> bool| {
-        lista.iter().find(|(_, n)| n["class_type"].as_str().is_some_and(f)).map(|(k, _)| (*k).clone())
+        lista
+            .iter()
+            .find(|(_, n)| n["class_type"].as_str().is_some_and(f))
+            .map(|(k, _)| (*k).clone())
     };
     Ok(Nos {
-        amostrador: achar(&|t| t.contains("Sampler") && !t.starts_with("KSamplerSelect")).unwrap_or_default(),
+        amostrador: achar(&|t| t.contains("Sampler") && !t.starts_with("KSamplerSelect"))
+            .unwrap_or_default(),
         decodificacao: achar(&|t| t.starts_with("VAEDecode")).unwrap_or_default(),
         saida: achar(&|t| t == "SaveImage").ok_or("O fluxo não tem um nó SaveImage.")?,
     })
@@ -169,7 +189,10 @@ impl Status<'_> {
     }
     fn passos(&mut self, valor: f64, maximo: f64) {
         // O ComfyUI repete cada passo em dois tipos de evento e manda 0/1 antes do KSampler.
-        let atual = (self.dados["progress_value"].as_f64(), self.dados["progress_max"].as_f64());
+        let atual = (
+            self.dados["progress_value"].as_f64(),
+            self.dados["progress_max"].as_f64(),
+        );
         if maximo <= 1.0 || atual == (Some(valor), Some(maximo)) {
             return;
         }
@@ -203,11 +226,23 @@ impl From<String> for Erro {
 }
 
 fn versao_marcador(c: &Caminhos) -> Option<SystemTime> {
-    fs::metadata(controle::marcador_desligamento(c)).and_then(|m| m.modified()).ok()
+    fs::metadata(controle::marcador_desligamento(c))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
-fn pedir(metodo: &str, rota: &str, corpo: Option<Value>, limite: u64) -> Result<Value, ureq::Error> {
-    let req = ureq::request(metodo, &format!("{BASE}{rota}")).timeout(Duration::from_secs(limite));
+fn pedir(
+    base: &str,
+    metodo: &str,
+    rota: &str,
+    corpo: Option<Value>,
+    limite: u64,
+) -> Result<Value, ureq::Error> {
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(Duration::from_secs(limite))
+        .build();
+    let req = agent.request(metodo, &format!("{base}{rota}"));
     let resp = match corpo {
         Some(c) => req.send_json(c)?,
         None => req.call()?,
@@ -218,20 +253,44 @@ fn pedir(metodo: &str, rota: &str, corpo: Option<Value>, limite: u64) -> Result<
 /// Escuta o WebSocket do ComfyUI para saber os passos reais do KSampler. O
 /// histórico HTTP continua sendo a fonte do resultado; sem WebSocket só se
 /// perde o detalhe do progresso.
-fn ouvir_progresso(cliente: &str, parar: Arc<AtomicBool>) -> Receiver<Value> {
+fn ouvir_progresso(base: &str, cliente: &str, parar: Arc<AtomicBool>) -> Receiver<Value> {
     let (tx, rx) = mpsc::sync_channel(64);
-    let url = format!("ws://127.0.0.1:8188/ws?clientId={cliente}");
+    let base = base.to_string();
+    let cliente = cliente.to_string();
     thread::spawn(move || {
-        let Ok(tcp) = TcpStream::connect_timeout(&"127.0.0.1:8188".parse().unwrap(), Duration::from_secs(3)) else {
+        let Ok(mut url) = url::Url::parse(&format!("{base}/ws")) else {
             return;
         };
+        // Sem TLS no cliente WebSocket, HTTPS usa apenas polling HTTP seguro.
+        if url.scheme() != "http" {
+            return;
+        }
+        let Some(host) = url.host_str() else {
+            return;
+        };
+        let Ok(mut addresses) = (host, url.port_or_known_default().unwrap_or(80)).to_socket_addrs()
+        else {
+            return;
+        };
+        let Some(tcp) = addresses
+            .find_map(|address| TcpStream::connect_timeout(&address, Duration::from_secs(3)).ok())
+        else {
+            return;
+        };
+        let _ = url.set_scheme("ws");
+        url.query_pairs_mut().append_pair("clientId", &cliente);
         let _ = tcp.set_read_timeout(Some(Duration::from_millis(500)));
-        let Ok((mut ws, _)) = tungstenite::client(url.as_str(), tcp) else { return };
+        let Ok((mut ws, _)) = tungstenite::client(url.as_str(), tcp) else {
+            return;
+        };
         while !parar.load(Ordering::Relaxed) {
             match ws.read() {
                 Ok(tungstenite::Message::Text(t)) => {
                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                        if matches!(v["type"].as_str(), Some("progress" | "progress_state" | "executing")) {
+                        if matches!(
+                            v["type"].as_str(),
+                            Some("progress" | "progress_state" | "executing")
+                        ) {
                             let _ = tx.try_send(v);
                         }
                     }
@@ -239,7 +298,10 @@ fn ouvir_progresso(cliente: &str, parar: Arc<AtomicBool>) -> Receiver<Value> {
                 Ok(tungstenite::Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
                 Err(_) => break,
             }
         }
@@ -281,10 +343,18 @@ fn publicar_progresso(rx: &Receiver<Value>, prompt_id: &str, nos: &Nos, st: &mut
 /// Gera uma imagem. `cancelar` interrompe só este pedido; o Desligar do
 /// ORDIS (marcador global) interrompe e impede a restauração do Qwen.
 /// Devolve `{ok, file, seed, ...}` ou `{ok: false, error, cancelled}`.
-pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn Fn(&Value)) -> Value {
+pub fn gerar(
+    c: &Caminhos,
+    args: &Value,
+    cancelar: &AtomicBool,
+    ao_status: &dyn Fn(&Value),
+) -> Value {
     let inicio = Instant::now();
     let id = controle::sufixo_unico();
     let modelo = modelos::imagem(c);
+    let comfy = crate::diagnostics::comfy(c);
+    let base = comfy.endpoint.clone();
+    let managed_comfy = comfy.managed;
     let base_global = versao_marcador(c);
     let global = || versao_marcador(c).is_some_and(|v| Some(v) != base_global);
     let checar = || -> Result<(), Erro> {
@@ -307,9 +377,14 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
     let resultado = (|| -> Result<Value, Erro> {
         let p = validar(args, modelo.passos)?;
         let grafo = if modelo.fluxo.is_empty() {
-            let checkpoint = c.runtime.join("ComfyUI/models/checkpoints").join(&modelo.checkpoint);
-            if !checkpoint.is_file() {
-                return Err(Erro::Falha(format!("Modelo de imagem não encontrado: {}", modelo.checkpoint)));
+            let available = comfy.checkpoints.as_deref().unwrap_or_default();
+            if !crate::diagnostics::safe_model_name(&modelo.checkpoint)
+                || !available.contains(&modelo.checkpoint)
+            {
+                return Err(Erro::Falha(format!(
+                    "Modelo de imagem não encontrado: {}",
+                    modelo.checkpoint
+                )));
             }
             workflow(&p, &id, &modelo)
         } else {
@@ -322,14 +397,29 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
             checar()?;
             let mut estado = controle::ler_estado(c);
             let mut sys = System::new();
-            let restaurar = crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi
+            let restaurar = managed_comfy
+                && crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi
                 && crate::backends::manages_tabby(c)
-                && estado.get("inferencia").is_some_and(|i| controle::rastreado(&mut sys, i));
+                && estado
+                    .get("inferencia")
+                    .is_some_and(|i| controle::rastreado(&mut sys, i));
             // Nunca encerra um processo externo que esteja usando as portas.
             for (nome, porta) in controle::SERVICOS {
-                let nosso = estado.get(nome).is_some_and(|i| controle::rastreado(&mut sys, i));
+                if (nome == "imagens" && !managed_comfy)
+                    || (nome == "inferencia"
+                        && (crate::backends::active_kind(c)
+                            == crate::backends::BackendKind::LlamaCpp
+                            || !crate::backends::manages_tabby(c)))
+                {
+                    continue;
+                }
+                let nosso = estado
+                    .get(nome)
+                    .is_some_and(|i| controle::rastreado(&mut sys, i));
                 if controle::ocupada(porta) && !nosso {
-                    return Err(Erro::Falha(format!("Porta de {nome} ocupada por processo externo.")));
+                    return Err(Erro::Falha(format!(
+                        "Porta de {nome} ocupada por processo externo."
+                    )));
                 }
             }
             let mut prompt_id: Option<String> = None;
@@ -337,36 +427,63 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
             let gerado = (|| -> Result<Value, Erro> {
                 st.etapa(
                     "releasing_llm",
-                    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
-                        "O llama.cpp externo permanece ativo durante a geração..."
+                    if !restaurar {
+                        "Os servidores externos e os modelos ativos permanecem em execução..."
                     } else {
                         "Liberando a GPU para imagens..."
                     },
                 );
-                controle::parar_um(c, "inferencia", &mut estado, &mut sys)?;
+                if restaurar {
+                    controle::parar_um(c, "inferencia", &mut estado, &mut sys)?;
+                }
                 checar()?;
-                st.etapa("starting_images", "Iniciando o gerador de imagens...");
-                let iniciado = controle::iniciar_servico(c, "imagens", &mut estado, &mut sys, &|_| {}, &|| {
-                    checar().map_err(|_| "cancelado".to_string())
-                });
+                st.etapa(
+                    "starting_images",
+                    if managed_comfy {
+                        "Iniciando o gerador de imagens..."
+                    } else {
+                        "Conectando ao ComfyUI externo..."
+                    },
+                );
+                let iniciado = controle::iniciar_servico(
+                    c,
+                    "imagens",
+                    &mut estado,
+                    &mut sys,
+                    &|_| {},
+                    &|| checar().map_err(|_| "cancelado".to_string()),
+                );
                 checar()?;
                 iniciado?;
                 let cliente = format!("ordis-{id}");
-                let rx = ouvir_progresso(&cliente, parar_ws.clone());
+                let rx = ouvir_progresso(&base, &cliente, parar_ws.clone());
                 st.etapa("generating", "Carregando o modelo de imagem...");
-                let r = pedir("POST", "/prompt", Some(json!({"prompt": grafo.clone(), "client_id": cliente})), 20)
-                    .map_err(|e| format!("O ComfyUI recusou o pedido: {e}"))?;
-                let pid = r["prompt_id"].as_str().ok_or("O ComfyUI não devolveu um identificador.")?.to_string();
+                let r = pedir(
+                    &base,
+                    "POST",
+                    "/prompt",
+                    Some(json!({"prompt": grafo.clone(), "client_id": cliente})),
+                    20,
+                )
+                .map_err(|e| format!("O ComfyUI recusou o pedido: {e}"))?;
+                let pid = r["prompt_id"]
+                    .as_str()
+                    .ok_or("O ComfyUI não devolveu um identificador.")?
+                    .to_string();
                 prompt_id = Some(pid.clone());
                 let limite = Instant::now() + Duration::from_secs(1200);
                 let mut falhas = 0;
                 while Instant::now() < limite {
                     checar()?;
-                    if !estado.get("imagens").is_some_and(|i| controle::rastreado(&mut sys, i)) {
+                    if managed_comfy
+                        && !estado
+                            .get("imagens")
+                            .is_some_and(|i| controle::rastreado(&mut sys, i))
+                    {
                         return Err(Erro::Falha("O ComfyUI encerrou durante a geração.".into()));
                     }
                     publicar_progresso(&rx, &pid, &nos, &mut st);
-                    let historico = match pedir("GET", &format!("/history/{pid}"), None, 3) {
+                    let historico = match pedir(&base, "GET", &format!("/history/{pid}"), None, 3) {
                         Ok(v) => {
                             falhas = 0;
                             v[pid.as_str()].clone()
@@ -377,7 +494,9 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
                         Err(_) => {
                             falhas += 1;
                             if falhas >= 5 {
-                                return Err(Erro::Falha("Gerador de imagens sem resposta após cinco tentativas.".into()));
+                                return Err(Erro::Falha(
+                                    "Gerador de imagens sem resposta após cinco tentativas.".into(),
+                                ));
                             }
                             st.mensagem("Aguardando resposta do gerador de imagens...");
                             thread::sleep(Duration::from_millis(250));
@@ -386,30 +505,87 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
                     };
                     if historico.is_object() {
                         if historico["status"]["status_str"] == "error" {
-                            let detalhe: String = historico["status"].to_string().chars().take(1500).collect();
-                            return Err(Erro::Falha(format!("Falha na geração. Consulte imagens.log: {detalhe}")));
+                            let detalhe: String =
+                                historico["status"].to_string().chars().take(1500).collect();
+                            return Err(Erro::Falha(format!(
+                                "Falha na geração. Consulte imagens.log: {detalhe}"
+                            )));
                         }
-                        if let Some(img) = historico["outputs"][nos.saida.as_str()]["images"].get(0) {
-                            let nome = img["filename"].as_str().ok_or("Saída sem nome de arquivo.")?;
+                        if let Some(img) = historico["outputs"][nos.saida.as_str()]["images"].get(0)
+                        {
+                            let nome = img["filename"]
+                                .as_str()
+                                .ok_or("Saída sem nome de arquivo.")?;
                             let sub = img["subfolder"].as_str().unwrap_or("");
-                            let arquivo = saida
-                                .join(sub)
-                                .join(nome)
-                                .canonicalize()
-                                .map_err(|_| "Arquivo de saída não encontrado.".to_string())?;
-                            if !arquivo.starts_with(saida.canonicalize().map_err(|e| e.to_string())?) {
-                                return Err(Erro::Falha("Arquivo de saída fora da pasta de imagens.".into()));
+                            let arquivo = if managed_comfy {
+                                saida
+                                    .join(sub)
+                                    .join(nome)
+                                    .canonicalize()
+                                    .map_err(|_| "Arquivo de saída não encontrado.".to_string())?
+                            } else {
+                                let extension = nome
+                                    .rsplit('.')
+                                    .next()
+                                    .filter(|s| ["png", "jpg", "jpeg", "webp"].contains(s))
+                                    .ok_or("Formato de imagem externo não suportado.")?;
+                                let agent = ureq::AgentBuilder::new()
+                                    .redirects(0)
+                                    .timeout(Duration::from_secs(30))
+                                    .build();
+                                let response = agent
+                                    .get(&format!("{base}/view"))
+                                    .query("filename", nome)
+                                    .query("subfolder", sub)
+                                    .query("type", "output")
+                                    .call()
+                                    .map_err(|_| "Falha ao buscar a imagem no ComfyUI externo.")?;
+                                if !response
+                                    .header("Content-Type")
+                                    .is_some_and(|t| t.starts_with("image/"))
+                                {
+                                    return Err("ComfyUI não devolveu uma imagem.".into());
+                                }
+                                let mut bytes = vec![];
+                                response
+                                    .into_reader()
+                                    .take(32 * 1024 * 1024 + 1)
+                                    .read_to_end(&mut bytes)
+                                    .map_err(|_| "Falha ao ler imagem externa.")?;
+                                if bytes.is_empty() || bytes.len() > 32 * 1024 * 1024 {
+                                    return Err("Imagem externa vazia ou maior que 32 MB.".into());
+                                }
+                                let file = saida.join(format!("ORDIS_{id}.{extension}"));
+                                fs::write(&file, bytes)
+                                    .map_err(|_| "Falha ao salvar imagem externa.")?;
+                                file.canonicalize()
+                                    .map_err(|_| "Falha ao localizar imagem salva.")?
+                            };
+                            if !arquivo
+                                .starts_with(saida.canonicalize().map_err(|e| e.to_string())?)
+                            {
+                                return Err(Erro::Falha(
+                                    "Arquivo de saída fora da pasta de imagens.".into(),
+                                ));
                             }
                             let parametros = json!({"prompt": p.prompt, "negative": p.negative, "width": p.width,
                                                     "height": p.height, "steps": p.steps, "seed": p.seed});
                             let _ = fs::write(
                                 arquivo.with_extension("json"),
-                                serde_json::to_vec_pretty(&json!({"parameters": parametros, "workflow": grafo})).unwrap(),
+                                serde_json::to_vec_pretty(
+                                    &json!({"parameters": parametros, "workflow": grafo}),
+                                )
+                                .unwrap(),
                             );
                             let caminho = arquivo.display().to_string();
-                            let caminho = caminho.strip_prefix(r"\\?\").unwrap_or(&caminho).to_string();
-                            return Ok(json!({"ok": true, "file": caminho, "job_id": id, "seed": p.seed,
-                                             "model": modelos::nome_curto_imagem(&modelo), "width": p.width, "height": p.height}));
+                            let caminho = caminho
+                                .strip_prefix(r"\\?\")
+                                .unwrap_or(&caminho)
+                                .to_string();
+                            return Ok(
+                                json!({"ok": true, "file": caminho, "job_id": id, "seed": p.seed,
+                                             "model": modelos::nome_curto_imagem(&modelo), "width": p.width, "height": p.height}),
+                            );
                         }
                         if historico["status"]["completed"] == true {
                             return Err(Erro::Falha("O workflow terminou sem imagem.".into()));
@@ -425,28 +601,54 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
             let mut gerado = gerado;
             if let (Err(Erro::Cancelado(_)), Some(pid)) = (&gerado, &prompt_id) {
                 st.etapa("cancelling", "Cancelando esta geração...");
-                let _ = pedir("POST", &format!("/api/jobs/{pid}/cancel"), Some(json!({})), 3);
+                let _ = pedir(
+                    &base,
+                    "POST",
+                    &format!("/api/jobs/{pid}/cancel"),
+                    Some(json!({})),
+                    3,
+                );
             }
             parar_ws.store(true, Ordering::Relaxed);
             st.etapa(
                 "stopping_images",
-                if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
+                if !managed_comfy {
+                    "Finalizando o pedido. O ComfyUI externo permanece ativo..."
+                } else if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp
+                {
                     "Encerrando o gerador de imagens. O llama.cpp externo continua ativo..."
                 } else {
                     "Encerrando o gerador de imagens e liberando a GPU..."
                 },
             );
             let mut restaurar = restaurar;
-            if let Err(e) = controle::parar_um(c, "imagens", &mut estado, &mut sys) {
+            if let Err(e) = if managed_comfy {
+                controle::parar_um(c, "imagens", &mut estado, &mut sys)
+            } else {
+                Ok(())
+            } {
                 // Não recarrega o Qwen enquanto o ComfyUI pode estar ocupando a VRAM.
                 restaurar = false;
-                gerado = Err(Erro::Falha(format!("Falha ao encerrar o gerador de imagens: {e}")));
+                gerado = Err(Erro::Falha(format!(
+                    "Falha ao encerrar o gerador de imagens: {e}"
+                )));
             }
             if restaurar && !global() {
                 st.etapa("restoring_llm", "Restaurando o modelo de linguagem...");
-                let r = controle::iniciar_servico(c, "inferencia", &mut estado, &mut sys, &|_| {}, &|| {
-                    if global() { Err("desligamento".into()) } else { Ok(()) }
-                });
+                let r = controle::iniciar_servico(
+                    c,
+                    "inferencia",
+                    &mut estado,
+                    &mut sys,
+                    &|_| {},
+                    &|| {
+                        if global() {
+                            Err("desligamento".into())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
                 if global() {
                     let _ = controle::parar_um(c, "inferencia", &mut estado, &mut sys);
                     gerado = Err(Erro::Cancelado(Parada::Global));
@@ -464,7 +666,10 @@ pub fn gerar(c: &Caminhos, args: &Value, cancelar: &AtomicBool, ao_status: &dyn 
             v["seconds"] = json!(segundos);
             st.dados["completed"] = json!(true);
             st.dados["ok"] = json!(true);
-            st.etapa("completed", aviso.as_deref().unwrap_or("Imagem salva. Pronto."));
+            st.etapa(
+                "completed",
+                aviso.as_deref().unwrap_or("Imagem salva. Pronto."),
+            );
             v
         }
         Err(Erro::Cancelado(parada)) => {

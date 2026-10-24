@@ -1,6 +1,6 @@
 # Teste manual: ORDIS e llama.cpp no Windows 10
 
-Este procedimento valida o pacote `ORDIS-Windows-Test.zip` do artifact **ORDIS-Windows-Test-Fase-1.6**, substituto do artifact de teste anterior. O pacote incorpora a identificação do modelo ativo e a separação das configurações do TabbyAPI. O ORDIS é somente cliente HTTP do llama.cpp. Ele não inicia, para, reinicia, mata nem altera o servidor, o GGUF ou o contexto configurado.
+Este procedimento valida o pacote `ORDIS-Windows-Test.zip` do artifact **ORDIS-Windows-Test-Fase-2**, substituto do pacote da Fase 1.6. Além da identificação do backend, inclui diagnóstico de hardware, consulta de `/props` e `/metrics`, configuração do ComfyUI e planejamento inativo do modo Desenvolvedor. Veja também [o inventário e o reteste específico da Fase 2](FASE-2-CONFIGURACOES.md). O ORDIS é somente cliente HTTP do llama.cpp. Ele não inicia, para, reinicia, mata nem altera o servidor, o GGUF ou o contexto configurado.
 
 ## O que vem no pacote
 
@@ -25,7 +25,7 @@ Faça as etapas com o servidor llama.cpp já iniciado pelo usuário e configurad
 
 1. Abra o ORDIS. Confirme que a janela aparece mesmo com TabbyAPI ausente e ComfyUI parado.
 2. Abra **Configurações > Modelos**, selecione llama.cpp e salve o endpoint `http://127.0.0.1:8080`.
-3. Use **Testar conexão**. Confirme que o modelo informado corresponde ao GGUF carregado no servidor.
+3. Use **Testar backend salvo**. Confirme que o modelo informado corresponde ao GGUF carregado no servidor.
    Confirme que contexto e limite por resposta aparecem como desconhecidos quando o servidor não os anuncia. A ferramenta `session_status` deve informar `Lucille`, backend `llama.cpp`, conexão ativa e limites nulos, sem reaproveitar contexto ou opções do TabbyAPI.
    Confirme que a tela de modelos oculta as opções TabbyAPI enquanto llama.cpp está selecionado e que, ao voltar ao TabbyAPI, os valores anteriores continuam salvos.
    No rodapé do chat, confirme o formato `Lucille · llama.cpp · conectado`; pare o servidor manualmente para verificar que a interface mostre desconectado e volte a conectado após reiniciá-lo manualmente.

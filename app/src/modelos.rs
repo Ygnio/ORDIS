@@ -15,13 +15,43 @@ use serde_json::{json, Value};
 use crate::controle::{self, Caminhos};
 
 const SAMPLERS: &[&str] = &[
-    "euler", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "lms", "dpmpp_2s_ancestral", "dpmpp_sde",
-    "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "ddim", "uni_pc", "lcm",
+    "euler",
+    "euler_ancestral",
+    "heun",
+    "dpm_2",
+    "dpm_2_ancestral",
+    "lms",
+    "dpmpp_2s_ancestral",
+    "dpmpp_sde",
+    "dpmpp_2m",
+    "dpmpp_2m_sde",
+    "dpmpp_3m_sde",
+    "ddim",
+    "uni_pc",
+    "lcm",
 ];
-const SCHEDULERS: &[&str] = &["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
+const SCHEDULERS: &[&str] = &[
+    "normal",
+    "karras",
+    "exponential",
+    "sgm_uniform",
+    "simple",
+    "ddim_uniform",
+    "beta",
+];
 /// Marcas aceitas num fluxo importado do ComfyUI (formato API).
-pub const MARCAS: &[&str] =
-    &["prompt", "negativo", "seed", "largura", "altura", "passos", "cfg", "sampler", "scheduler", "checkpoint"];
+pub const MARCAS: &[&str] = &[
+    "prompt",
+    "negativo",
+    "seed",
+    "largura",
+    "altura",
+    "passos",
+    "cfg",
+    "sampler",
+    "scheduler",
+    "checkpoint",
+];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -111,7 +141,10 @@ fn pasta_checkpoints(c: &Caminhos) -> PathBuf {
 }
 
 fn ler_arquivo(c: &Caminhos) -> Arquivo {
-    fs::read_to_string(arquivo_app(c)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    fs::read_to_string(arquivo_app(c))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
 }
 
 /// Pares `chave: valor` diretamente sob uma seção do config.yml (recuo de 2).
@@ -127,7 +160,12 @@ fn chaves_secao(texto: &str, nome: &str) -> Vec<(String, String)> {
             continue;
         }
         if let Some((k, v)) = linha.trim().split_once(':') {
-            let v = v.split(" #").next().unwrap_or("").trim().trim_matches(['"', '\'']);
+            let v = v
+                .split(" #")
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches(['"', '\'']);
             saida.push((k.trim().to_string(), v.to_string()));
         }
     }
@@ -139,11 +177,18 @@ pub fn conversa(c: &Caminhos) -> Conversa {
     if let Some(m) = ler_arquivo(c).max_tokens {
         v.max_tokens = m;
     }
-    let Ok(texto) = fs::read_to_string(config_tabby(c)) else { return v };
+    let Ok(texto) = fs::read_to_string(config_tabby(c)) else {
+        return v;
+    };
     let chaves = chaves_secao(&texto, "model");
     let valor = |k: &str| chaves.iter().find(|(x, _)| x == k).map(|(_, v)| v.as_str());
     let rascunho = chaves_secao(&texto, "draft_model");
-    let valor_rascunho = |k: &str| rascunho.iter().find(|(x, _)| x == k).map(|(_, v)| v.as_str());
+    let valor_rascunho = |k: &str| {
+        rascunho
+            .iter()
+            .find(|(x, _)| x == k)
+            .map(|(_, v)| v.as_str())
+    };
     v.mtp = valor_rascunho("draft_mode") == Some("mtp");
     if let Some(n) = valor_rascunho("draft_num_tokens").and_then(|n| n.parse().ok()) {
         v.mtp_tokens = n;
@@ -169,7 +214,10 @@ pub fn imagem(c: &Caminhos) -> Imagem {
 /// Nome curto para a interface: "Qwen3.8-27B-exl3-3.0bpw" vira "Qwen3.8-27B".
 pub fn nome_curto_conversa(modelo: &str) -> String {
     let minusculo = modelo.to_lowercase();
-    let corte = ["-exl", "_exl", "-gguf", "-awq", "-gptq"].iter().filter_map(|s| minusculo.find(s)).min();
+    let corte = ["-exl", "_exl", "-gguf", "-awq", "-gptq"]
+        .iter()
+        .filter_map(|s| minusculo.find(s))
+        .min();
     modelo[..corte.unwrap_or(modelo.len())].to_string()
 }
 
@@ -177,7 +225,10 @@ pub fn nome_curto_imagem(i: &Imagem) -> String {
     if !i.fluxo.is_empty() {
         return i.fluxo.trim_end_matches(".json").to_string();
     }
-    let base = i.checkpoint.rsplit_once('.').map_or(i.checkpoint.as_str(), |(b, _)| b);
+    let base = i
+        .checkpoint
+        .rsplit_once('.')
+        .map_or(i.checkpoint.as_str(), |(b, _)| b);
     let mut nome = base.to_string();
     for sufixo in ["_fp16", "-fp16", "_fp8", "-fp8", "_bf16", "-bf16"] {
         if let Some(n) = nome.strip_suffix(sufixo) {
@@ -211,7 +262,8 @@ fn gb(bytes: u64) -> f64 {
 
 /// Formatos de ferramenta que este Tabby conhece, lidos do próprio código dele.
 fn formatos_ferramentas(c: &Caminhos) -> Vec<String> {
-    let texto = fs::read_to_string(c.runtime.join("tabbyAPI/endpoints/OAI/utils/tools.py")).unwrap_or_default();
+    let texto = fs::read_to_string(c.runtime.join("tabbyAPI/endpoints/OAI/utils/tools.py"))
+        .unwrap_or_default();
     let mut lista = vec![];
     if let Some(i) = texto.find("ALL_TOOLCALL_FORMATS") {
         let bloco = &texto[i..];
@@ -229,7 +281,14 @@ fn formatos_ferramentas(c: &Caminhos) -> Vec<String> {
 fn vram_total_gb() -> Option<f64> {
     // nvidia-smi: "usado MiB, total MiB"
     let v = controle::vram()?;
-    let total: f64 = v.split(',').nth(1)?.trim().trim_end_matches("MiB").trim().parse().ok()?;
+    let total: f64 = v
+        .split(',')
+        .nth(1)?
+        .trim()
+        .trim_end_matches("MiB")
+        .trim()
+        .parse()
+        .ok()?;
     Some((total / 1024.0 * 10.0).round() / 10.0)
 }
 
@@ -258,13 +317,26 @@ pub fn opcoes(c: &Caminhos) -> Value {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| ["safetensors", "ckpt", "sft"].contains(&&*x.to_string_lossy())))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|x| ["safetensors", "ckpt", "sft"].contains(&&*x.to_string_lossy()))
+        })
         .map(|p| {
             json!({"nome": p.file_name().unwrap().to_string_lossy(),
                    "gb": gb(p.metadata().map(|m| m.len()).unwrap_or(0))})
         })
         .collect();
     checkpoints.sort_by(|a, b| a["nome"].as_str().cmp(&b["nome"].as_str()));
+    let comfy = crate::diagnostics::comfy(c);
+    if comfy.checkpoint_source == "server" || !comfy.managed {
+        checkpoints = comfy
+            .checkpoints
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|name| json!({"nome": name, "gb": null}))
+            .collect();
+    }
     let mut fluxos: Vec<String> = fs::read_dir(pasta_fluxos(c))
         .into_iter()
         .flatten()
@@ -279,6 +351,7 @@ pub fn opcoes(c: &Caminhos) -> Value {
         "padrao": {"conversa": Conversa::default(), "imagem": Imagem::default()},
         "modelos_conversa": llm,
         "checkpoints": checkpoints,
+        "comfy": comfy,
         "fluxos": fluxos,
         "ferramentas": formatos_ferramentas(c),
         "samplers": SAMPLERS,
@@ -292,27 +365,57 @@ pub fn opcoes(c: &Caminhos) -> Value {
 // ---------- Gravação ----------
 
 fn validar(c: &Caminhos, conversa: &Conversa, imagem: &Imagem) -> Result<(), String> {
-    if conversa.modelo.contains(['/', '\\']) || !pasta_llm(c).join(&conversa.modelo).join("config.json").is_file() {
-        return Err(format!("Modelo de conversa não encontrado: {}", conversa.modelo));
-    }
-    if !(4096..=262_144).contains(&conversa.contexto) || conversa.contexto % 256 != 0 {
-        return Err("O contexto deve ficar entre 4.096 e 262.144 tokens, em múltiplos de 256.".into());
-    }
-    if !(256..=(conversa.contexto / 2) as u32).contains(&conversa.max_tokens) {
-        return Err("O limite por resposta deve ficar entre 256 tokens e metade do contexto.".into());
-    }
-    if !(1..=8).contains(&conversa.mtp_tokens) {
-        return Err("Os tokens adiantados do MTP devem ficar entre 1 e 8.".into());
-    }
-    if !conversa.ferramentas.is_empty() && !formatos_ferramentas(c).contains(&conversa.ferramentas) {
-        return Err(format!("Formato de ferramentas desconhecido: {}", conversa.ferramentas));
-    }
-    if imagem.fluxo.is_empty() {
-        if imagem.checkpoint.contains(['/', '\\']) || !pasta_checkpoints(c).join(&imagem.checkpoint).is_file() {
-            return Err(format!("Modelo de imagem não encontrado: {}", imagem.checkpoint));
+    let mudou_conversa = conversa != &self::conversa(c);
+    if crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi && mudou_conversa {
+        if conversa.modelo.contains(['/', '\\'])
+            || !pasta_llm(c)
+                .join(&conversa.modelo)
+                .join("config.json")
+                .is_file()
+        {
+            return Err(format!(
+                "Modelo de conversa não encontrado: {}",
+                conversa.modelo
+            ));
         }
-    } else if imagem.fluxo.contains(['/', '\\']) || !pasta_fluxos(c).join(&imagem.fluxo).is_file() {
-        return Err(format!("Fluxo não encontrado: {}", imagem.fluxo));
+        if !(4096..=262_144).contains(&conversa.contexto) || conversa.contexto % 256 != 0 {
+            return Err(
+                "O contexto deve ficar entre 4.096 e 262.144 tokens, em múltiplos de 256.".into(),
+            );
+        }
+        if !(256..=(conversa.contexto / 2) as u32).contains(&conversa.max_tokens) {
+            return Err(
+                "O limite por resposta deve ficar entre 256 tokens e metade do contexto.".into(),
+            );
+        }
+        if !(1..=8).contains(&conversa.mtp_tokens) {
+            return Err("Os tokens adiantados do MTP devem ficar entre 1 e 8.".into());
+        }
+        if !conversa.ferramentas.is_empty()
+            && !formatos_ferramentas(c).contains(&conversa.ferramentas)
+        {
+            return Err(format!(
+                "Formato de ferramentas desconhecido: {}",
+                conversa.ferramentas
+            ));
+        }
+    }
+    if imagem != &self::imagem(c) {
+        if imagem.fluxo.is_empty() {
+            let available = crate::diagnostics::comfy(c).checkpoints.unwrap_or_default();
+            if !crate::diagnostics::safe_model_name(&imagem.checkpoint)
+                || !available.contains(&imagem.checkpoint)
+            {
+                return Err(format!(
+                    "Modelo de imagem não encontrado: {}",
+                    imagem.checkpoint
+                ));
+            }
+        } else if imagem.fluxo.contains(['/', '\\'])
+            || !pasta_fluxos(c).join(&imagem.fluxo).is_file()
+        {
+            return Err(format!("Fluxo não encontrado: {}", imagem.fluxo));
+        }
     }
     if !(1..=50).contains(&imagem.passos) {
         return Err("Os passos devem ficar entre 1 e 50.".into());
@@ -320,7 +423,9 @@ fn validar(c: &Caminhos, conversa: &Conversa, imagem: &Imagem) -> Result<(), Str
     if !(0.0..=30.0).contains(&imagem.cfg) {
         return Err("O cfg deve ficar entre 0 e 30.".into());
     }
-    if !SAMPLERS.contains(&imagem.sampler.as_str()) || !SCHEDULERS.contains(&imagem.scheduler.as_str()) {
+    if !SAMPLERS.contains(&imagem.sampler.as_str())
+        || !SCHEDULERS.contains(&imagem.scheduler.as_str())
+    {
         return Err("Sampler ou scheduler desconhecido.".into());
     }
     Ok(())
@@ -335,9 +440,16 @@ fn ajustar_config(original: &str, v: &Conversa) -> String {
 }
 
 fn ajustar_rascunho(original: &str, v: &Conversa) -> String {
-    let quebra = if original.contains("\r\n") { "\r\n" } else { "\n" };
+    let quebra = if original.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let novas = if v.mtp {
-        vec!["  draft_mode: mtp".to_string(), format!("  draft_num_tokens: {}", v.mtp_tokens)]
+        vec![
+            "  draft_mode: mtp".to_string(),
+            format!("  draft_num_tokens: {}", v.mtp_tokens),
+        ]
     } else {
         vec![]
     };
@@ -364,7 +476,9 @@ fn ajustar_rascunho(original: &str, v: &Conversa) -> String {
         Some(i) => {
             saida.splice(i + 1..i + 1, novas);
             // Seção que ficou só com o cabeçalho sai do arquivo.
-            let vazia = saida.get(i + 1).is_none_or(|l| !l.starts_with(' ') || l.trim().is_empty());
+            let vazia = saida
+                .get(i + 1)
+                .is_none_or(|l| !l.starts_with(' ') || l.trim().is_empty());
             if vazia {
                 saida.remove(i);
             }
@@ -375,7 +489,12 @@ fn ajustar_rascunho(original: &str, v: &Conversa) -> String {
         }
         None => {}
     }
-    saida.join(quebra) + if original.ends_with('\n') || original.is_empty() { quebra } else { "" }
+    saida.join(quebra)
+        + if original.ends_with('\n') || original.is_empty() {
+            quebra
+        } else {
+            ""
+        }
 }
 
 fn ajustar_modelo(original: &str, v: &Conversa) -> String {
@@ -426,28 +545,56 @@ fn ajustar_modelo(original: &str, v: &Conversa) -> String {
             saida.extend(faltando);
         }
     }
-    let quebra = if original.contains("\r\n") { "\r\n" } else { "\n" };
-    saida.join(quebra) + if original.ends_with('\n') || original.is_empty() { quebra } else { "" }
+    let quebra = if original.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    saida.join(quebra)
+        + if original.ends_with('\n') || original.is_empty() {
+            quebra
+        } else {
+            ""
+        }
 }
 
 /// Grava as duas configurações. Devolve true se o modelo de conversa mudou
 /// (o Tabby precisa ser reiniciado para valer).
 pub fn salvar(c: &Caminhos, conversa: &Conversa, imagem: &Imagem) -> Result<bool, String> {
+    let preservada = self::conversa(c);
+    let conversa = if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp
+        || !crate::backends::manages_tabby(c)
+    {
+        &preservada
+    } else {
+        conversa
+    };
     validar(c, conversa, imagem)?;
     controle::com_trava(c, false, || {
         let atual = self::conversa(c);
-        let mudou_tabby = Conversa { max_tokens: 0, ..atual.clone() } != Conversa { max_tokens: 0, ..conversa.clone() };
+        let mudou_tabby = Conversa {
+            max_tokens: 0,
+            ..atual.clone()
+        } != Conversa {
+            max_tokens: 0,
+            ..conversa.clone()
+        };
         if mudou_tabby {
             let caminho = config_tabby(c);
-            let original = fs::read_to_string(&caminho).map_err(|e| format!("Falha ao ler o config.yml: {e}"))?;
+            let original = fs::read_to_string(&caminho)
+                .map_err(|e| format!("Falha ao ler o config.yml: {e}"))?;
             let tmp = caminho.with_extension("yml.tmp");
             fs::write(&tmp, ajustar_config(&original, conversa)).map_err(|e| e.to_string())?;
             fs::rename(&tmp, &caminho).map_err(|e| format!("Falha ao gravar o config.yml: {e}"))?;
         }
-        let arquivo = Arquivo { max_tokens: Some(conversa.max_tokens), imagem: imagem.clone() };
+        let arquivo = Arquivo {
+            max_tokens: Some(conversa.max_tokens),
+            imagem: imagem.clone(),
+        };
         let tmp = arquivo_app(c).with_extension("tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(&arquivo).unwrap()).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, arquivo_app(c)).map_err(|e| format!("Falha ao gravar modelos.json: {e}"))?;
+        fs::rename(&tmp, arquivo_app(c))
+            .map_err(|e| format!("Falha ao gravar modelos.json: {e}"))?;
         Ok(mudou_tabby)
     })
 }
@@ -455,8 +602,11 @@ pub fn salvar(c: &Caminhos, conversa: &Conversa, imagem: &Imagem) -> Result<bool
 /// Importa um fluxo do ComfyUI exportado em formato API, com marcas como
 /// "{{prompt}}" nos campos que o ORDIS deve preencher.
 pub fn importar_fluxo(c: &Caminhos, nome: &str, conteudo: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(conteudo).map_err(|e| format!("O arquivo não é um JSON válido: {e}"))?;
-    let nos = v.as_object().ok_or("Exporte o fluxo no formato API do ComfyUI (Export (API)).")?;
+    let v: Value = serde_json::from_str(conteudo)
+        .map_err(|e| format!("O arquivo não é um JSON válido: {e}"))?;
+    let nos = v
+        .as_object()
+        .ok_or("Exporte o fluxo no formato API do ComfyUI (Export (API)).")?;
     if !nos.values().all(|n| n["class_type"].is_string()) {
         return Err("Exporte o fluxo no formato API do ComfyUI (Export (API)).".into());
     }
@@ -471,9 +621,19 @@ pub fn importar_fluxo(c: &Caminhos, nome: &str, conteudo: &str) -> Result<String
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default()
         .chars()
-        .map(|ch| if ch.is_alphanumeric() || "-_. ".contains(ch) { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_alphanumeric() || "-_. ".contains(ch) {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let base = if base.trim().is_empty() { "fluxo".to_string() } else { base.trim().to_string() };
+    let base = if base.trim().is_empty() {
+        "fluxo".to_string()
+    } else {
+        base.trim().to_string()
+    };
     fs::create_dir_all(pasta_fluxos(c)).map_err(|e| e.to_string())?;
     let arquivo = format!("{base}.json");
     fs::write(pasta_fluxos(c).join(&arquivo), conteudo).map_err(|e| e.to_string())?;
@@ -484,15 +644,25 @@ pub fn importar_fluxo(c: &Caminhos, nome: &str, conteudo: &str) -> Result<String
 
 fn conversar(c: &Caminhos, corpo: Value) -> Result<Value, String> {
     let (base, chave) = crate::backends::active_endpoint(c);
-    let mut req = ureq::post(&format!("{}/v1/chat/completions", base.trim_end_matches('/')))
-        .timeout(std::time::Duration::from_secs(300));
+    let mut req = ureq::post(&format!(
+        "{}/v1/chat/completions",
+        base.trim_end_matches('/')
+    ))
+    .timeout(std::time::Duration::from_secs(300));
     if let Some(key) = chave.as_deref().filter(|k| !k.is_empty()) {
         req = req.set("Authorization", &format!("Bearer {key}"));
     }
     req.send_json(corpo)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => {
-                format!("HTTP {code}: {}", r.into_string().unwrap_or_default().chars().take(300).collect::<String>())
+                format!(
+                    "HTTP {code}: {}",
+                    r.into_string()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(300)
+                        .collect::<String>()
+                )
             }
             e => e.to_string(),
         })?
@@ -512,15 +682,26 @@ fn corpo_teste(c: &Caminhos, modelo: &str, mensagens: Value, limite_tabby: u32) 
 /// separação do raciocínio, chamada de ferramenta e, se ativada, visão.
 pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
     let mut cfg = conversa(c);
-    if let Ok(modelo) = crate::backends::selected_model(c) { cfg.modelo = modelo; }
+    if let Ok(modelo) = crate::backends::selected_model(c) {
+        cfg.modelo = modelo;
+    }
     let capacidades = crate::backends::active_capabilities(c);
     if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
         cfg.visao = capacidades.image_input;
         cfg.raciocinio = capacidades.reasoning == Some(true);
-        cfg.ferramentas = if capacidades.tools { "llama.cpp".into() } else { String::new() };
+        cfg.ferramentas = if capacidades.tools {
+            "llama.cpp".into()
+        } else {
+            String::new()
+        };
     }
     let mut etapas = vec![];
-    fn etapa(etapas: &mut Vec<Value>, nome: &str, inicio: std::time::Instant, r: Result<String, String>) -> bool {
+    fn etapa(
+        etapas: &mut Vec<Value>,
+        nome: &str,
+        inicio: std::time::Instant,
+        r: Result<String, String>,
+    ) -> bool {
         let ok = r.is_ok();
         let detalhe = r.unwrap_or_else(|e| e);
         etapas.push(json!({"nome": nome, "ok": ok, "detalhe": detalhe,
@@ -564,8 +745,12 @@ pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
     if !cfg.ferramentas.is_empty() {
         progresso("Testando uma chamada de ferramenta…");
         let t = std::time::Instant::now();
-        let mut corpo = corpo_teste(c, &cfg.modelo,
-            json!([{"role": "user", "content": "Use a ferramenta hora_atual para saber a hora. Não responda sem chamá-la."}]), 2048);
+        let mut corpo = corpo_teste(
+            c,
+            &cfg.modelo,
+            json!([{"role": "user", "content": "Use a ferramenta hora_atual para saber a hora. Não responda sem chamá-la."}]),
+            2048,
+        );
         corpo["tools"] = json!([{"type": "function", "function": {"name": "hora_atual", "description": "Devolve a hora atual.",
                     "parameters": {"type": "object", "properties": {}}}}]);
         let r = conversar(c, corpo)
@@ -609,6 +794,40 @@ pub fn testar_conversa(c: &Caminhos, progresso: &dyn Fn(&str)) -> Value {
 mod testes {
     use super::*;
 
+    #[test]
+    fn llama_image_settings_do_not_require_or_rewrite_tabby_model() {
+        let root =
+            std::env::temp_dir().join(format!("ordis-model-settings-{}", controle::sufixo_unico()));
+        let c = Caminhos {
+            projeto: root.clone(),
+            runtime: root.clone(),
+        };
+        crate::backends::save(
+            &c,
+            crate::backends::BackendSettings {
+                selected: crate::backends::BackendKind::LlamaCpp,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        fs::create_dir_all(pasta_fluxos(&c)).unwrap();
+        fs::write(pasta_fluxos(&c).join("synthetic.json"), "{}").unwrap();
+        let image = Imagem {
+            fluxo: "synthetic.json".into(),
+            ..Imagem::default()
+        };
+        let tabby = Conversa {
+            modelo: "absent-synthetic-model".into(),
+            ..Conversa::default()
+        };
+        assert!(!salvar(&c, &tabby, &image).unwrap());
+        assert_eq!(imagem(&c), image);
+        assert_eq!(conversa(&c), Conversa::default());
+        assert!(!config_tabby(&c).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     const CFG: &str = "network:\r\n  port: 5000\r\nmodel:\r\n  model_dir: models\r\n  model_name: Qwen\r\n  max_seq_len: 32768\r\n  cache_size: 32768\r\n  cache_mode: Q8\r\n  vision: true\r\n  reasoning: true\r\n  template_vars_default:\r\n    enable_thinking: true\r\n  tool_format: qwen3_5\r\nsampling:\r\n  override_preset: x\r\n";
 
     #[test]
@@ -631,34 +850,78 @@ mod testes {
             mtp_tokens: 3,
         };
         let novo = ajustar_config(CFG, &v);
-        assert_eq!(novo, CFG
-            .replace("model_name: Qwen", "model_name: Outro")
-            .replace("32768", "16384")
-            .replace("  reasoning: true\r\n", "  reasoning: false\r\n")
-            .replace("  tool_format: qwen3_5\r\n", ""));
+        assert_eq!(
+            novo,
+            CFG.replace("model_name: Qwen", "model_name: Outro")
+                .replace("32768", "16384")
+                .replace("  reasoning: true\r\n", "  reasoning: false\r\n")
+                .replace("  tool_format: qwen3_5\r\n", "")
+        );
         // Com os mesmos valores, o arquivo volta byte a byte.
-        let original = Conversa { modelo: "Qwen".into(), contexto: 32768, ferramentas: "qwen3_5".into(), ..v };
-        let original = Conversa { raciocinio: true, ..original };
+        let original = Conversa {
+            modelo: "Qwen".into(),
+            contexto: 32768,
+            ferramentas: "qwen3_5".into(),
+            ..v
+        };
+        let original = Conversa {
+            raciocinio: true,
+            ..original
+        };
         assert_eq!(ajustar_config(CFG, &original), CFG);
     }
 
     #[test]
     fn liga_e_desliga_o_mtp_sem_sobras() {
-        let ligado = Conversa { modelo: "Qwen".into(), mtp: true, ..Conversa::default() };
-        let com = ajustar_config(CFG, &Conversa { mtp_tokens: 4, ..ligado.clone() });
+        let ligado = Conversa {
+            modelo: "Qwen".into(),
+            mtp: true,
+            ..Conversa::default()
+        };
+        let com = ajustar_config(
+            CFG,
+            &Conversa {
+                mtp_tokens: 4,
+                ..ligado.clone()
+            },
+        );
         assert!(com.ends_with("sampling:\r\n  override_preset: x\r\ndraft_model:\r\n  draft_mode: mtp\r\n  draft_num_tokens: 4\r\n"));
         let lido = chaves_secao(&com, "draft_model");
-        assert_eq!(lido, vec![("draft_mode".into(), "mtp".into()), ("draft_num_tokens".into(), "4".into())]);
+        assert_eq!(
+            lido,
+            vec![
+                ("draft_mode".into(), "mtp".into()),
+                ("draft_num_tokens".into(), "4".into())
+            ]
+        );
         // Trocar os tokens não duplica a seção.
-        let de_novo = ajustar_config(&com, &Conversa { mtp_tokens: 3, ..ligado.clone() });
+        let de_novo = ajustar_config(
+            &com,
+            &Conversa {
+                mtp_tokens: 3,
+                ..ligado.clone()
+            },
+        );
         assert_eq!(de_novo.matches("draft_model:").count(), 1);
         assert!(de_novo.contains("  draft_num_tokens: 3\r\n"));
         // Desligar remove a seção que o ORDIS criou.
-        let sem = ajustar_config(&de_novo, &Conversa { mtp: false, ..ligado.clone() });
+        let sem = ajustar_config(
+            &de_novo,
+            &Conversa {
+                mtp: false,
+                ..ligado.clone()
+            },
+        );
         assert!(!sem.contains("draft"));
         // Outras opções da seção são preservadas.
         let outra = format!("{CFG}draft_model:\r\n  draft_cache_mode: Q8\r\n");
-        let sem_outra = ajustar_config(&ajustar_config(&outra, &ligado), &Conversa { mtp: false, ..ligado });
+        let sem_outra = ajustar_config(
+            &ajustar_config(&outra, &ligado),
+            &Conversa {
+                mtp: false,
+                ..ligado
+            },
+        );
         assert!(sem_outra.ends_with("draft_model:\r\n  draft_cache_mode: Q8\r\n"));
     }
 
@@ -672,7 +935,10 @@ mod testes {
 
     #[test]
     fn nomes_curtos() {
-        assert_eq!(nome_curto_conversa("Qwen3.8-27B-exl3-3.0bpw"), "Qwen3.8-27B");
+        assert_eq!(
+            nome_curto_conversa("Qwen3.8-27B-exl3-3.0bpw"),
+            "Qwen3.8-27B"
+        );
         assert_eq!(nome_curto_imagem(&Imagem::default()), "RealVisXL_V5.0");
     }
 }

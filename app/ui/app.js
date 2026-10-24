@@ -6,7 +6,7 @@ const nomeBackend = () => backendAtual?.backend === 'llama_cpp' ? 'llama.cpp' : 
 const nomeModeloAtivo = () => backendAtual?.model || 'Modelo desconhecido';
 const SERVICOS = {
   inferencia: { titulo: 'Inferência', detalhe: () => `${nomeModeloAtivo()} · ${nomeBackend()} · ${backendAtual?.connected ? 'conectado' : 'desconectado'}` },
-  imagens: { titulo: 'Imagens', detalhe: () => `${nomes.imagem} · ComfyUI` },
+  imagens: { titulo: 'Imagens', detalhe: () => 'ComfyUI · modelo em Configurações' },
 };
 const SITUACAO = { pronto: 'Pronto', iniciando: 'Iniciando…', desligado: 'Desligado' };
 const TEMAS = {
@@ -18,6 +18,7 @@ const TEMAS = {
 const $ = (id) => document.getElementById(id);
 let ocupado = false;
 let ultimoPainel = null;
+let consultandoPainel = false;
 let trocando = false; // geração de imagem em curso neste app: o modelo de conversa sai da GPU e volta
 // Nomes curtos dos modelos configurados (Configurações > Modelos), vindos do painel.
 let nomes = { conversa: 'Qwen3.8-27B', imagem: 'RealVisXL_V5.0' };
@@ -70,7 +71,9 @@ window.ordis = {
   // Há troca de modelo quando este app gera uma imagem ou quando o ComfyUI
   // está ligado (geração iniciada pelo terminal, por exemplo).
   emTroca(p) {
-    return trocando || !!(p && p.servicos.some((s) => s.nome === 'imagens' && s.situacao !== 'desligado'));
+    if (backendAtual?.externally_managed || backendAtual?.backend === 'llama_cpp') return false;
+    const imagens = p?.servicos.find((service) => service.nome === 'imagens');
+    return imagens?.managed !== false && (trocando || !!(imagens && imagens.situacao !== 'desligado'));
   },
   definirTroca(sim) {
     trocando = sim;
@@ -176,6 +179,12 @@ function mostrarVram(v) {
 }
 
 function mostrarTokens(t, inferenciaLigada) {
+  if (backendAtual?.backend === 'llama_cpp') {
+    const rate = backendAtual.details?.metrics?.['llamacpp:predicted_tokens_seconds'];
+    $('tokens').textContent = typeof rate === 'number' ? `${rate.toFixed(1)} tokens/s` : '—';
+    $('tokens-detalhe').textContent = typeof rate === 'number' ? 'Média do servidor · /metrics' : 'Velocidade não anunciada';
+    return;
+  }
   const ultima = t && t.last_generation;
   if (inferenciaLigada && t && typeof t.tokens_per_second === 'number') {
     $('tokens').textContent = `${t.tokens_per_second.toFixed(1)} tokens/s`;
@@ -238,13 +247,15 @@ window.addEventListener('backend-status', ({ detail }) => {
         ? 'ORDIS pronto. O modelo está carregado na GPU.'
         : controle.active
           ? 'Serviços parcialmente ligados.'
-          : 'ORDIS desligado. A GPU está livre.');
+          : 'Serviços gerenciados desligados. Consulte o uso de VRAM no painel.');
     }
     mostrarControles(ultimoPainel);
   }
 });
 
 async function atualizar() {
+  if (consultandoPainel) return;
+  consultandoPainel = true;
   try {
     const p = await invoke('painel');
     ultimoPainel = p;
@@ -261,11 +272,13 @@ async function atualizar() {
         ? 'ORDIS pronto. O modelo está carregado na GPU.'
         : controle.active
           ? 'Serviços parcialmente ligados.'
-          : 'ORDIS desligado. A GPU está livre.');
+          : 'Serviços gerenciados desligados. Consulte o uso de VRAM no painel.');
     }
     mostrarControles(p);
   } catch (e) {
     registrar(`Falha ao consultar o estado: ${e}`, true);
+  } finally {
+    consultandoPainel = false;
   }
 }
 

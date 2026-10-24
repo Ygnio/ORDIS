@@ -1,5 +1,8 @@
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = $PSScriptRoot
+if (-not (Test-Path -LiteralPath (Join-Path $root 'app\ORDIS.exe'))) {
+    $root = Split-Path -Parent $PSScriptRoot
+}
 $exe = Join-Path $root 'app\ORDIS.exe'
 $dataRoot = Join-Path $env:LOCALAPPDATA 'Lucille\ORDIS-Teste'
 

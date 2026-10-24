@@ -9,7 +9,7 @@ Assistente local para Windows que roda inteiro na sua GPU: conversa com um model
 - **Agente**: conversa com raciocínio visível, markdown e imagens. Tem ferramentas para ler arquivos do workspace, pesquisar na web, ler páginas, consultar o Proxmox e gerar imagens.
 - **Imagens**: prompt direto ao gerador, com formato, seed, progresso real e cancelamento.
 - **Painel**: liga e desliga os modelos e mostra memória da GPU e tokens/s.
-- **Configurações**: tema claro, escuro ou automático; escolha dos modelos de conversa e de imagem, com teste; MTP (geração ~65% mais rápida em modelos compatíveis); conexão com o Proxmox.
+- **Configurações**: tema claro, escuro ou automático; escolha dos modelos de conversa e de imagem, com teste; MTP opcional em modelos compatíveis; conexão com o Proxmox.
 - **Terminal**: `ordis-cli` faz o mesmo pela linha de comando, com um avaliador de qualidade e latência do modelo.
 
 Detalhes de cada aba e das ferramentas em [app/README.md](app/README.md) e [COMO USAR.md](COMO%20USAR.md). Medições de memória, disco e tempo em [docs/MEDICOES-2026-10-23.md](docs/MEDICOES-2026-10-23.md).
@@ -25,7 +25,7 @@ Detalhes de cada aba e das ferramentas em [app/README.md](app/README.md) e [COMO
 
 O app funciona e é usado no dia a dia, mas **ainda não há instalador**: o ambiente de execução (`runtime/`, com Python, TabbyAPI, ComfyUI e os modelos) é montado à mão. Um assistente de primeiro uso está nos planos.
 
-Para a validação isolada do backend llama.cpp no Windows, baixe o artifact mais recente `ORDIS-Windows-Test-Fase-1.6` do workflow de CI e siga [docs/TESTE-WINDOWS-LLAMA-CPP.md](docs/TESTE-WINDOWS-LLAMA-CPP.md). Ele substitui o artifact de teste anterior. O lançador usa `%LOCALAPPDATA%\Lucille\ORDIS-Teste`; runtimes de TabbyAPI/ComfyUI continuam externos. A mudança do runtime atual do projeto para `%LOCALAPPDATA%\Lucille\` não é automática e não move dados existentes.
+Para validar o cliente llama.cpp e as configurações no Windows 10 Pro 22H2, baixe o artifact mais recente `ORDIS-Windows-Test-Fase-2` do workflow de CI. Consulte o [inventário e roteiro da Fase 2](docs/FASE-2-CONFIGURACOES.md) e o [guia de execução](docs/TESTE-WINDOWS-LLAMA-CPP.md). Este pacote substitui o da Fase 1.6. O lançador preserva `%LOCALAPPDATA%\Lucille\ORDIS-Teste`. Os requisitos acima descrevem a configuração Tabby original; o cliente HTTP foi testado pelo usuário com llama.cpp externo, i7-3770, 16 GB de RAM e RTX 3060 12 GB, sem garantir contexto ou desempenho. O diagnóstico consulta o hardware real. O modo Desenvolvedor só armazena preferências de planejamento e não concede permissões.
 
 ### Montar o runtime
 

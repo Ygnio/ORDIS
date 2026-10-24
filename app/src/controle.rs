@@ -88,7 +88,12 @@ fn linha_de_comando(sys: &mut System, pid: u32) -> Vec<String> {
         ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
     );
     sys.process(pid)
-        .map(|p| p.cmd().iter().map(|s| s.to_string_lossy().into_owned()).collect())
+        .map(|p| {
+            p.cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -139,23 +144,22 @@ fn buscar(url: &str, chave: Option<&str>) -> Option<Value> {
 
 pub(crate) fn pronto(c: &Caminhos, nome: &str) -> bool {
     match nome {
-        "imagens" => buscar("http://127.0.0.1:8188/system_stats", None)
-            .is_some_and(|v| v.get("system").is_some()),
-        "inferencia" => crate::backends::check(c).is_ok_and(|s| {
+        "imagens" => buscar(
+            &format!("{}/system_stats", crate::settings::load(c).comfy_url),
+            None,
+        )
+        .is_some_and(|v| v.get("system").is_some()),
+        "inferencia" => crate::backends::available_model(c).is_ok_and(|model| {
             crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp
-                || s.model.as_deref() == Some(crate::modelos::conversa(c).modelo.as_str())
+                || !crate::backends::manages_tabby(c)
+                || model == crate::modelos::conversa(c).modelo
         }),
         _ => false,
     }
 }
 
 pub fn vram() -> Option<String> {
-    let out = Command::new("nvidia-smi")
-        .args(["--query-gpu=memory.used,memory.total", "--format=csv,noheader"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    crate::diagnostics::vram_line()
 }
 
 #[derive(Serialize)]
@@ -164,6 +168,7 @@ pub struct EstadoServico {
     pub porta: u16,
     /// "pronto", "iniciando" ou "desligado".
     pub situacao: &'static str,
+    pub managed: bool,
 }
 
 #[derive(Serialize)]
@@ -178,27 +183,68 @@ pub struct Painel {
 pub fn painel(c: &Caminhos) -> Painel {
     let estado = ler_estado(c);
     let mut sys = System::new();
-    let external_inference = crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp
+    let external_inference = crate::backends::active_kind(c)
+        == crate::backends::BackendKind::LlamaCpp
         || !crate::backends::manages_tabby(c);
     let servicos = SERVICOS
         .iter()
         .map(|&(nome, porta)| {
             let ativo = estado.get(nome).is_some_and(|i| rastreado(&mut sys, i));
-            let externo_pronto = nome == "inferencia" && external_inference && pronto(c, nome);
-            let pronto = if nome == "inferencia" && external_inference { externo_pronto } else { ativo && pronto(c, nome) };
-            let situacao = if pronto { "pronto" } else if ativo && !(external_inference && nome == "inferencia") { "iniciando" } else { "desligado" };
+            let managed = if nome == "inferencia" {
+                !external_inference
+            } else {
+                crate::settings::manages_comfy(c)
+            };
+            let pronto = (nome == "imagens" || ativo || !managed) && pronto(c, nome);
+            let managed = managed && (nome != "imagens" || ativo || !pronto);
+            let situacao = if pronto {
+                "pronto"
+            } else if ativo && managed {
+                "iniciando"
+            } else {
+                "desligado"
+            };
             let porta = if nome == "inferencia" && external_inference {
                 let s = crate::backends::settings(c);
-                let url = if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp { s.llama_url } else { s.tabby_url };
-                url.parse::<url::Url>().ok().and_then(|u| u.port_or_known_default()).unwrap_or(porta)
-            } else { porta };
-            EstadoServico { nome, porta, situacao }
+                let url =
+                    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
+                        s.llama_url
+                    } else {
+                        s.tabby_url
+                    };
+                url.parse::<url::Url>()
+                    .ok()
+                    .and_then(|u| u.port_or_known_default())
+                    .unwrap_or(porta)
+            } else if nome == "imagens" {
+                crate::settings::load(c)
+                    .comfy_url
+                    .parse::<url::Url>()
+                    .ok()
+                    .and_then(|u| u.port_or_known_default())
+                    .unwrap_or(porta)
+            } else {
+                porta
+            };
+            EstadoServico {
+                nome,
+                porta,
+                situacao,
+                managed,
+            }
         })
         .collect();
-    let tokens = fs::read_to_string(c.runtime.join("token-metrics.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str(t.trim()).ok());
-    Painel { servicos, vram: vram(), tokens, modelos: crate::modelos::nomes(c) }
+    let tokens = (crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi
+        && crate::backends::manages_tabby(c))
+    .then(|| fs::read_to_string(c.runtime.join("token-metrics.json")))
+    .and_then(Result::ok)
+    .and_then(|t| serde_json::from_str(t.trim()).ok());
+    Painel {
+        servicos,
+        vram: vram(),
+        tokens,
+        modelos: crate::modelos::nomes(c),
+    }
 }
 
 /// Trava exclusiva de controle (`runtime\control.lock`): só um controle por vez.
@@ -224,7 +270,9 @@ pub(crate) fn com_trava<T, E: From<String>>(
             break t;
         }
         if !esperar || Instant::now() > limite {
-            return Err(E::from("Outro controle do ORDIS está em andamento. Aguarde.".to_string()));
+            return Err(E::from(
+                "Outro controle do ORDIS está em andamento. Aguarde.".to_string(),
+            ));
         }
         sleep(Duration::from_secs(1));
     };
@@ -246,8 +294,15 @@ fn descendentes(sys: &mut System, raiz: u32) -> Vec<u32> {
     encontrados
 }
 
-pub(crate) fn parar_um(c: &Caminhos, nome: &str, estado: &mut Estado, sys: &mut System) -> Result<(), String> {
-    let Some(info) = estado.get(nome).cloned() else { return Ok(()) };
+pub(crate) fn parar_um(
+    c: &Caminhos,
+    nome: &str,
+    estado: &mut Estado,
+    sys: &mut System,
+) -> Result<(), String> {
+    let Some(info) = estado.get(nome).cloned() else {
+        return Ok(());
+    };
     if rastreado(sys, &info) {
         if let Some(stop) = &info.stop_file {
             let _ = File::create(stop);
@@ -266,7 +321,9 @@ pub(crate) fn parar_um(c: &Caminhos, nome: &str, estado: &mut Estado, sys: &mut 
         let limite = Instant::now() + Duration::from_secs(20);
         while todos.iter().any(|&p| win::is_running(p)) {
             if Instant::now() > limite {
-                return Err(format!("Não foi possível encerrar {nome}; estado preservado."));
+                return Err(format!(
+                    "Não foi possível encerrar {nome}; estado preservado."
+                ));
             }
             sleep(Duration::from_millis(250));
         }
@@ -276,7 +333,10 @@ pub(crate) fn parar_um(c: &Caminhos, nome: &str, estado: &mut Estado, sys: &mut 
 }
 
 pub fn sufixo_unico() -> String {
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     format!("{:016x}", (n as u64) ^ ((std::process::id() as u64) << 40))
 }
 
@@ -290,17 +350,38 @@ pub(crate) fn iniciar_servico(
     progresso: &dyn Fn(&str),
     cancelado: &dyn Fn() -> Result<(), String>,
 ) -> Result<(), String> {
-    let porta = SERVICOS.iter().find(|(n, _)| *n == nome).map(|(_, p)| *p).ok_or("Serviço desconhecido.")?;
+    if nome == "imagens"
+        && (!crate::settings::manages_comfy(c)
+            || (!estado.get(nome).is_some_and(|info| rastreado(sys, info)) && pronto(c, nome)))
+    {
+        return if pronto(c, nome) {
+            Ok(())
+        } else {
+            Err(
+                "ComfyUI externo indisponível. Confira o endereço e inicie o serviço externamente."
+                    .into(),
+            )
+        };
+    }
+    let porta = SERVICOS
+        .iter()
+        .find(|(n, _)| *n == nome)
+        .map(|(_, p)| *p)
+        .ok_or("Serviço desconhecido.")?;
     if let Some(info) = estado.get(nome) {
         if rastreado(sys, info) {
             if pronto(c, nome) {
                 return Ok(());
             }
-            return Err(format!("{nome} já está em execução, mas sem resposta. Use Desligar."));
+            return Err(format!(
+                "{nome} já está em execução, mas sem resposta. Use Desligar."
+            ));
         }
     }
     if ocupada(porta) {
-        return Err(format!("Porta {porta} ocupada por outro processo. Nenhum processo externo foi encerrado."));
+        return Err(format!(
+            "Porta {porta} ocupada por outro processo. Nenhum processo externo foi encerrado."
+        ));
     }
     if nome == "inferencia" && ocupada(5001) {
         // O Tabby pode trocar para esta porta; melhor falhar do que mudar em silêncio.
@@ -313,7 +394,8 @@ pub(crate) fn iniciar_servico(
     if nome == "inferencia" {
         let cwd = r.join("tabbyAPI");
         cmd = Command::new(cwd.join("venv/Scripts/python.exe"));
-        cmd.arg(c.projeto.join("scripts/serve_inference.py")).current_dir(&cwd);
+        cmd.arg(c.projeto.join("scripts/serve_inference.py"))
+            .current_dir(&cwd);
         // serve_inference.py encerra o Tabby de forma ordenada quando este arquivo aparece.
         let f = r.join(format!("{nome}-{}.stop", sufixo_unico()));
         cmd.env("ORDIS_STOP_FILE", &f);
@@ -324,9 +406,19 @@ pub(crate) fn iniciar_servico(
         fs::create_dir_all(&saida).map_err(|e| e.to_string())?;
         cmd = Command::new(r.join("images-venv/Scripts/python.exe"));
         cmd.arg(cwd.join("main.py"))
-            .args(["--listen", "127.0.0.1", "--port", "8188", "--output-directory"])
+            .args([
+                "--listen",
+                "127.0.0.1",
+                "--port",
+                "8188",
+                "--output-directory",
+            ])
             .arg(&saida)
-            .args(["--disable-all-custom-nodes", "--disable-api-nodes", "--disable-auto-launch"])
+            .args([
+                "--disable-all-custom-nodes",
+                "--disable-api-nodes",
+                "--disable-auto-launch",
+            ])
             .current_dir(&cwd);
     }
     fs::create_dir_all(r.join("logs")).map_err(|e| e.to_string())?;
@@ -358,15 +450,25 @@ pub(crate) fn iniciar_servico(
     };
     estado.insert(nome.into(), info);
     salvar(c, estado)?;
-    progresso(if nome == "inferencia" { "Carregando o modelo na GPU..." } else { "Iniciando o gerador de imagens..." });
+    progresso(if nome == "inferencia" {
+        "Carregando o modelo na GPU..."
+    } else {
+        "Iniciando o gerador de imagens..."
+    });
     let limite = Instant::now() + Duration::from_secs(300);
     while Instant::now() < limite {
         cancelado()?;
         if !win::is_running(pid) {
-            return Err(format!("{nome} encerrou. Consulte runtime\\logs\\{nome}.log."));
+            return Err(format!(
+                "{nome} encerrou. Consulte runtime\\logs\\{nome}.log."
+            ));
         }
         if pronto(c, nome) {
-            progresso(if nome == "inferencia" { "Inferência pronta." } else { "Gerador de imagens pronto." });
+            progresso(if nome == "inferencia" {
+                "Inferência pronta."
+            } else {
+                "Gerador de imagens pronto."
+            });
             return Ok(());
         }
         sleep(Duration::from_secs(1));
@@ -375,7 +477,9 @@ pub(crate) fn iniciar_servico(
 }
 
 pub fn iniciar(c: &Caminhos, progresso: &dyn Fn(&str)) -> Result<(), String> {
-    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp || !crate::backends::manages_tabby(c) {
+    if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp
+        || !crate::backends::manages_tabby(c)
+    {
         progresso("Verificando conexão com o backend externo...");
         crate::backends::check(c)?;
         progresso("Backend conectado. O ORDIS não gerencia esse processo.");
@@ -395,7 +499,14 @@ pub fn iniciar(c: &Caminhos, progresso: &dyn Fn(&str)) -> Result<(), String> {
                 progresso("Liberando a GPU do gerador de imagens...");
                 parar_um(c, "imagens", &mut estado, &mut sys)?;
             }
-            iniciar_servico(c, "inferencia", &mut estado, &mut sys, progresso, &|| Ok(()))
+            iniciar_servico(
+                c,
+                "inferencia",
+                &mut estado,
+                &mut sys,
+                progresso,
+                &|| Ok(()),
+            )
         })();
         if resultado.is_err() {
             for (nome, _) in SERVICOS.iter().rev() {

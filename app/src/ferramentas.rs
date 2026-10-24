@@ -61,7 +61,7 @@ pub fn definicoes() -> Value {
         }},
         {"type": "function", "function": {
             "name": "ordis_gerar_imagem",
-            "description": "Gera uma imagem local com o modelo de imagem configurado no ORDIS. Use quando o usuario pedir para criar uma imagem, ilustracao ou fotografia. Escreva prompt descritivo em ingles. Demora alguns minutos pois troca o modelo na GPU e depois restaura o modelo de conversa. A imagem gerada aparece automaticamente para o usuario. Nao diga que gerou sem sucesso da ferramenta.",
+            "description": "Gera uma imagem com o ComfyUI configurado no ORDIS. Use quando o usuario pedir para criar uma imagem, ilustracao ou fotografia. Escreva prompt descritivo em ingles. Requer modelo ou workflow instalado e VRAM suficiente. Apenas o TabbyAPI gerenciado pode ser temporariamente parado e restaurado; servidores externos permanecem ativos. O ORDIS nunca descarrega nem reconfigura o llama.cpp. A imagem gerada aparece automaticamente. Nao diga que gerou sem sucesso da ferramenta.",
             "parameters": {"type": "object", "properties": {
                 "prompt": {"type": "string", "minLength": 1, "maxLength": 3000},
                 "negative": {"type": "string", "maxLength": 1500},
@@ -83,10 +83,18 @@ pub struct Resultado {
 
 impl Resultado {
     fn ok(texto: String) -> Self {
-        Resultado { texto, imagens: vec![], erro: false }
+        Resultado {
+            texto,
+            imagens: vec![],
+            erro: false,
+        }
     }
     fn falha(texto: impl Into<String>) -> Self {
-        Resultado { texto: texto.into(), imagens: vec![], erro: true }
+        Resultado {
+            texto: texto.into(),
+            imagens: vec![],
+            erro: true,
+        }
     }
 }
 
@@ -99,7 +107,11 @@ pub struct Contexto<'a> {
 }
 
 pub fn executar(ctx: &Contexto, nome: &str, argumentos: &str) -> Resultado {
-    let args: Value = match serde_json::from_str(if argumentos.trim().is_empty() { "{}" } else { argumentos }) {
+    let args: Value = match serde_json::from_str(if argumentos.trim().is_empty() {
+        "{}"
+    } else {
+        argumentos
+    }) {
         Ok(v) => v,
         Err(e) => return Resultado::falha(format!("Argumentos inválidos para {nome}: {e}")),
     };
@@ -120,10 +132,18 @@ pub fn workspace(c: &Caminhos) -> PathBuf {
 
 /// Resolve um caminho garantindo que ele fique dentro do workspace.
 pub fn dentro_do_workspace(c: &Caminhos, caminho: &str) -> Result<PathBuf, String> {
-    let raiz = workspace(c).canonicalize().map_err(|e| format!("Workspace indisponível: {e}"))?;
+    let raiz = workspace(c)
+        .canonicalize()
+        .map_err(|e| format!("Workspace indisponível: {e}"))?;
     let alvo = Path::new(caminho);
-    let alvo = if alvo.is_absolute() { alvo.to_path_buf() } else { raiz.join(alvo) };
-    let alvo = alvo.canonicalize().map_err(|_| format!("Arquivo não encontrado: {caminho}"))?;
+    let alvo = if alvo.is_absolute() {
+        alvo.to_path_buf()
+    } else {
+        raiz.join(alvo)
+    };
+    let alvo = alvo
+        .canonicalize()
+        .map_err(|_| format!("Arquivo não encontrado: {caminho}"))?;
     if !alvo.starts_with(&raiz) {
         return Err("Acesso negado: o arquivo está fora do workspace do agente.".into());
     }
@@ -144,7 +164,11 @@ fn ler(ctx: &Contexto, args: &Value) -> Resultado {
                 d.flatten()
                     .map(|e| {
                         let n = e.file_name().to_string_lossy().into_owned();
-                        if e.path().is_dir() { n + "/" } else { n }
+                        if e.path().is_dir() {
+                            n + "/"
+                        } else {
+                            n
+                        }
                     })
                     .collect()
             })
@@ -152,7 +176,11 @@ fn ler(ctx: &Contexto, args: &Value) -> Resultado {
         nomes.sort();
         return Resultado::ok(format!("Diretório {caminho}:\n{}", nomes.join("\n")));
     }
-    let ext = alvo.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let ext = alvo
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if EXTENSOES_IMAGEM.contains(&ext.as_str()) {
         return Resultado {
             texto: format!("Imagem {caminho} anexada para análise visual."),
@@ -165,14 +193,25 @@ fn ler(ctx: &Contexto, args: &Value) -> Resultado {
         Err(e) => return Resultado::falha(format!("Falha ao ler {caminho}: {e}")),
     };
     if bytes.iter().take(8000).any(|&b| b == 0) {
-        return Resultado::falha(format!("{caminho} é binário e não pode ser lido como texto."));
+        return Resultado::falha(format!(
+            "{caminho} é binário e não pode ser lido como texto."
+        ));
     }
     let texto = String::from_utf8_lossy(&bytes);
     let inicio = args["offset"].as_u64().unwrap_or(1).max(1) as usize - 1;
-    let limite = args["limit"].as_u64().map(|l| l as usize).unwrap_or(usize::MAX);
+    let limite = args["limit"]
+        .as_u64()
+        .map(|l| l as usize)
+        .unwrap_or(usize::MAX);
     let linhas: Vec<&str> = texto.lines().collect();
     let total = linhas.len();
-    let trecho = linhas.iter().skip(inicio).take(limite).copied().collect::<Vec<_>>().join("\n");
+    let trecho = linhas
+        .iter()
+        .skip(inicio)
+        .take(limite)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
     let (trecho, cortado) = cortar(&trecho, LEITURA_MAX);
     let mut saida = trecho.to_string();
     if cortado || inicio + limite.min(total) < total {
@@ -197,9 +236,20 @@ fn cortar(texto: &str, max: usize) -> (&str, bool) {
 pub fn agora_formatado() -> String {
     use chrono::{Datelike, Local};
     let agora = Local::now();
-    let dia = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
-        [agora.weekday().num_days_from_monday() as usize];
-    format!("{dia}, {} (horário de Brasília, UTC{})", agora.format("%d/%m/%Y %H:%M"), agora.format("%:z"))
+    let dia = [
+        "segunda-feira",
+        "terça-feira",
+        "quarta-feira",
+        "quinta-feira",
+        "sexta-feira",
+        "sábado",
+        "domingo",
+    ][agora.weekday().num_days_from_monday() as usize];
+    format!(
+        "{dia}, {} (horário de Brasília, UTC{})",
+        agora.format("%d/%m/%Y %H:%M"),
+        agora.format("%:z")
+    )
 }
 
 fn status_sessao(ctx: &Contexto) -> String {
@@ -216,8 +266,13 @@ fn status_sessao(ctx: &Contexto) -> String {
     // arquivo de configuração antigo antes de mostrar o endpoint à conversa.
     let endpoint = crate::backends::normalize_base(&endpoint_configured).ok();
     let status = Some(crate::backends::status(ctx.caminhos));
-    status_sessao_json(backend_name, endpoint.as_deref(), status.as_ref(), ctx.tokens_conversa)
-        .to_string()
+    status_sessao_json(
+        backend_name,
+        endpoint.as_deref(),
+        status.as_ref(),
+        ctx.tokens_conversa,
+    )
+    .to_string()
 }
 
 fn status_sessao_json(
@@ -278,7 +333,9 @@ fn ip_publico(ip: IpAddr) -> bool {
                 || v6.is_multicast()
                 || (s[0] & 0xfe00) == 0xfc00
                 || (s[0] & 0xffc0) == 0xfe80
-                || v6.to_ipv4_mapped().is_some_and(|v4| !ip_publico(IpAddr::V4(v4))))
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| !ip_publico(IpAddr::V4(v4))))
         }
     }
 }
@@ -293,7 +350,10 @@ fn verificar_destino(url: &str) -> Result<(), String> {
     let padrao = if url.starts_with("https") { 443 } else { 80 };
     let (host, porta) = if let Some(h) = host_porta.strip_prefix('[') {
         let (h, r) = h.split_once(']').ok_or("Endereço IPv6 inválido.")?;
-        (h.to_string(), r.trim_start_matches(':').parse().unwrap_or(padrao))
+        (
+            h.to_string(),
+            r.trim_start_matches(':').parse().unwrap_or(padrao),
+        )
     } else {
         match host_porta.rsplit_once(':') {
             Some((h, p)) => (h.to_string(), p.parse().unwrap_or(padrao)),
@@ -308,7 +368,10 @@ fn verificar_destino(url: &str) -> Result<(), String> {
         .map_err(|_| format!("Não foi possível resolver {host}."))?
         .collect();
     if enderecos.is_empty() || enderecos.iter().any(|a| !ip_publico(a.ip())) {
-        return Err("Endereço local ou de rede privada recusado. web_fetch só acessa a internet pública.".into());
+        return Err(
+            "Endereço local ou de rede privada recusado. web_fetch só acessa a internet pública."
+                .into(),
+        );
     }
     Ok(())
 }
@@ -317,7 +380,11 @@ fn buscar_pagina(args: &Value) -> Resultado {
     let Some(inicial) = args["url"].as_str() else {
         return Resultado::falha("Informe 'url'.");
     };
-    let max = args["maxChars"].as_u64().map(|m| m as usize).unwrap_or(PAGINA_MAX).clamp(500, PAGINA_MAX);
+    let max = args["maxChars"]
+        .as_u64()
+        .map(|m| m as usize)
+        .unwrap_or(PAGINA_MAX)
+        .clamp(500, PAGINA_MAX);
     let agente = ureq::AgentBuilder::new()
         .redirects(0)
         .timeout(Duration::from_secs(25))
@@ -349,7 +416,11 @@ fn buscar_pagina(args: &Value) -> Resultado {
         }
         let tipo = resposta.content_type().to_ascii_lowercase();
         let mut corpo = Vec::new();
-        if let Err(e) = resposta.into_reader().take(3_000_000).read_to_end(&mut corpo) {
+        if let Err(e) = resposta
+            .into_reader()
+            .take(3_000_000)
+            .read_to_end(&mut corpo)
+        {
             return Resultado::falha(format!("Falha ao ler a página: {e}"));
         }
         let texto = if tipo.contains("html") {
@@ -422,7 +493,8 @@ fn rodar_python(
         thread::sleep(Duration::from_millis(500));
     }
     let ultima = leitor.join().unwrap_or_default();
-    serde_json::from_str(&ultima).map_err(|_| "A ferramenta não retornou um resultado válido.".to_string())
+    serde_json::from_str(&ultima)
+        .map_err(|_| "A ferramenta não retornou um resultado válido.".to_string())
 }
 
 fn resultado_json(v: Result<Value, String>, padrao: &str) -> Resultado {
@@ -454,7 +526,10 @@ fn pesquisar(ctx: &Contexto, args: &Value) -> Resultado {
         &|| {},
         &|| {},
     );
-    resultado_json(r, "Pesquisa web indisponível; não foi possível confirmar a informação.")
+    resultado_json(
+        r,
+        "Pesquisa web indisponível; não foi possível confirmar a informação.",
+    )
 }
 
 fn proxmox(ctx: &Contexto, args: &Value) -> Resultado {
@@ -480,10 +555,14 @@ fn gerar_imagem(ctx: &Contexto, args: &Value) -> Resultado {
         }
     });
     let arquivo = v["file"].as_str().map(PathBuf::from);
-    let mut res = resultado_json(Ok(v), "Geração local falhou. Consulte runtime\\logs\\imagens.log.");
+    let mut res = resultado_json(
+        Ok(v),
+        "Geração local falhou. Consulte runtime\\logs\\imagens.log.",
+    );
     if let Some(a) = arquivo.filter(|_| !res.erro) {
         res.imagens.push(a);
-        res.texto.push_str("\nA imagem já está sendo exibida ao usuário.");
+        res.texto
+            .push_str("\nA imagem já está sendo exibida ao usuário.");
     }
     res
 }
@@ -495,6 +574,7 @@ mod status_tests {
 
     fn status(backend: BackendKind, model: &str, context: Option<u64>) -> BackendStatus {
         BackendStatus {
+            details: Default::default(),
             backend,
             connected: true,
             endpoint: "http://127.0.0.1:8080".into(),
@@ -542,8 +622,14 @@ mod status_tests {
         assert_eq!(value["modelo"], "Lucille");
         assert_eq!(value["contexto_tokens"], Value::Null);
         assert_eq!(value["resposta_max_tokens"], Value::Null);
-        assert_eq!(value["capacidades"]["raciocinio_separado_anunciado"], Value::Null);
-        assert_eq!(value["capacidades"]["ferramentas_validadas_modelo"], Value::Null);
+        assert_eq!(
+            value["capacidades"]["raciocinio_separado_anunciado"],
+            Value::Null
+        );
+        assert_eq!(
+            value["capacidades"]["ferramentas_validadas_modelo"],
+            Value::Null
+        );
         assert_eq!(value["gerenciado_externamente"], true);
     }
 
