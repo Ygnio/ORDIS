@@ -381,3 +381,22 @@ fn active_application_prompts_and_runtime_are_not_development_workspaces() {
     cfg.permissions.workspace = f.c.runtime.to_string_lossy().into();
     assert!(validate(&f.c, cfg).is_err());
 }
+
+#[test]
+fn execution_cannot_boot_from_a_runtime_in_the_editable_workspace() {
+    let f = Fixture::new();
+    fs::write(f.root.join("python.exe"), "synthetic runtime placeholder").unwrap();
+    let mut cfg = load(&f.c);
+    cfg.permissions.allow_execute = true;
+    cfg.permissions.python = f.root.join("python.exe").to_string_lossy().into();
+    let scope = Scope::new(&f.c, &cfg).unwrap();
+    let error = prepare(
+        &scope,
+        &cfg,
+        "developer_execute",
+        json!({"executable":"python","arguments":["test.py"],"reason":"Synthetic"}),
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("fora do workspace"));
+}

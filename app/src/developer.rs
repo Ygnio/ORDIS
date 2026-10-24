@@ -623,6 +623,9 @@ fn prepare(scope: &Scope, cfg: &Config, name: &str, args: Value) -> Result<Prepa
             if !Path::new(configured).is_absolute() || !exe.is_file() {
                 return Err("Runtime deve ser um executável absoluto instalado.".into());
             }
+            if exe.starts_with(&scope.root) {
+                return Err("Runtime confiável deve ficar fora do workspace editável; use Python/PowerShell instalado separadamente.".into());
+            }
             let _guard = guard(&exe, false)?;
             p.exe_hash = Some(hash(
                 &fs::read(&exe).map_err(|_| "Não foi possível verificar runtime.")?,
