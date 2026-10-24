@@ -94,7 +94,12 @@ def run(package, real=False):
             def reader():
                 for line in process.stdout:lines.put(line)
                 lines.put(None)
-            threading.Thread(target=reader,daemon=True).start();deadline=time.monotonic()+(180 if real else 45)
+            def drain_errors():
+                # Reasoning is a separate stream; never let its pipe stall the model.
+                while process.stderr.read(4096):pass
+            stdout_thread=threading.Thread(target=reader,daemon=True);stdout_thread.start()
+            stderr_thread=threading.Thread(target=drain_errors,daemon=True);stderr_thread.start()
+            deadline=time.monotonic()+(180 if real else 45)
             try:
                 while time.monotonic()<deadline:
                     try:line=lines.get(timeout=.2)
@@ -115,6 +120,7 @@ def run(package, real=False):
                 return process.returncode,''.join(captured)
             finally:
                 if process.poll() is None:process.kill();process.wait()
+                stdout_thread.join(timeout=5);stderr_thread.join(timeout=5)
                 for stream in [process.stdin,process.stdout,process.stderr]:stream.close()
         prompt='Lucille, examine este projeto, encontre o erro, corrija o código e execute os testes para verificar se a correção funcionou. Use workspace_list/read, apresente plano, workspace_patch com hash e developer_execute python test_calc.py. Somente os arquivos sintéticos deste workspace.'
         code,output=ask(prompt if real else 'Synthetic developer approved',True)
