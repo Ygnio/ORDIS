@@ -490,6 +490,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
+    use std::time::SystemTime;
 
     fn request(stream: &mut TcpStream) -> String {
         stream
@@ -510,7 +511,7 @@ mod tests {
             }
         }
         let header_end = header_end.expect("HTTP request headers");
-        let header = String::from_utf8_lossy(&body[..header_end]);
+        let header = String::from_utf8_lossy(&body[..header_end]).into_owned();
         let length = header
             .lines()
             .find_map(|l| {
@@ -526,7 +527,7 @@ mod tests {
             }
             body.extend_from_slice(&buf[..n]);
         }
-        header.into_owned()
+        header
     }
 
     fn json_response(stream: &mut TcpStream, status: &str, body: &str) {
