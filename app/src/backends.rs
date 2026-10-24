@@ -712,9 +712,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "ordis-backend-switch-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
-        let c = Caminhos { projeto: root.clone(), runtime: root.clone() };
+        let c = Caminhos {
+            projeto: root.clone(),
+            runtime: root.clone(),
+        };
         let llama = BackendSettings {
             selected: BackendKind::LlamaCpp,
             tabby_url: "http://127.0.0.1:5000".into(),
@@ -821,9 +827,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "ordis-llama-process-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
-        let c = Caminhos { projeto: root.clone(), runtime: root.clone() };
+        let c = Caminhos {
+            projeto: root.clone(),
+            runtime: root.clone(),
+        };
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
