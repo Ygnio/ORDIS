@@ -729,4 +729,11 @@ select option { background: var(--solido); color: var(--texto); }
 .policy-list dt { color: var(--sutil); }
 .policy-list dd { margin: 0; }
 #dev-repositories { width: 100%; resize: vertical; }
+.mem-controls { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px; align-items: end; }
+.mem-controls label { display: flex; flex-direction: column; gap: 6px; flex: 1 1 200px; }
+.mem-controls .mem-wide { flex: 1 0 100%; width: 100%; }
+.mem-controls textarea, #mem-project-fields textarea { width: 100%; box-sizing: border-box; }
+#mem-list article { padding: 14px; margin: 12px 0; border: 1px solid var(--borda); border-radius: 10px; }
+#mem-list pre, #mem-stats { white-space: pre-wrap; overflow-wrap: anywhere; }
+#mem-list button { margin-right: 8px; }
 @media (max-width: 700px) { .policy-list { grid-template-columns: 1fr; } }

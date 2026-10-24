@@ -8,6 +8,7 @@ description = "ORDIS: painel, agente e controles locais"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+rusqlite = { version = "0.40.1", features = ["bundled", "backup"] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

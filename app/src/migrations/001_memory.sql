@@ -1,0 +1,17 @@
+CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+CREATE TABLE conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at INTEGER NOT NULL, project_id INTEGER REFERENCES projects(id));
+CREATE TABLE messages(conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(conversation_id,ordinal));
+CREATE TABLE projects(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, goal TEXT NOT NULL DEFAULT '', repository TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '', architecture TEXT NOT NULL DEFAULT '', issues TEXT NOT NULL DEFAULT '', solutions TEXT NOT NULL DEFAULT '', tests TEXT NOT NULL DEFAULT '', next_tasks TEXT NOT NULL DEFAULT '', execution_state TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL);
+CREATE TABLE memories(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('fact','preference','hardware','project','decision','solution','goal','task','constraint','summary','hypothesis')), content TEXT NOT NULL, project_id INTEGER REFERENCES projects(id), fact_key TEXT NOT NULL DEFAULT '', state TEXT NOT NULL CHECK(state IN ('candidate','active','conflict','obsolete')), importance INTEGER NOT NULL CHECK(importance BETWEEN 1 AND 5), provenance TEXT NOT NULL CHECK(provenance IN ('user','manual','extractive','model')), fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX memories_dedup ON memories(fingerprint,kind,project_id);
+CREATE TABLE sources(id INTEGER PRIMARY KEY, memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL, ordinal INTEGER, description TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE UNIQUE INDEX sources_unique ON sources(memory_id,ifnull(conversation_id,''),ifnull(ordinal,-1),description);
+CREATE TABLE change_history(id INTEGER PRIMARY KEY, memory_id INTEGER, action TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE retrieval_audit(id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL, memory_ids TEXT NOT NULL, estimated_tokens INTEGER NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE settings(id INTEGER PRIMARY KEY CHECK(id=1), retrieval INTEGER NOT NULL, extraction INTEGER NOT NULL, token_budget INTEGER NOT NULL CHECK(token_budget BETWEEN 128 AND 4096), project_id INTEGER REFERENCES projects(id));
+INSERT INTO settings VALUES(1,1,1,1024,NULL);
+CREATE TABLE consolidation(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE, last_ordinal INTEGER NOT NULL, memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL);
+CREATE VIEW preferences AS SELECT * FROM memories WHERE kind='preference';
+CREATE VIEW decisions AS SELECT * FROM memories WHERE kind='decision';
+CREATE VIEW summaries AS SELECT * FROM memories WHERE kind='summary';
+CREATE VIEW interrupted_tasks AS SELECT * FROM memories WHERE kind='task';

@@ -774,7 +774,7 @@ mod tests {
             }
             body.extend_from_slice(&buf[..n]);
         }
-        header
+        String::from_utf8_lossy(&body).into_owned()
     }
 
     fn json_response(stream: &mut TcpStream, status: &str, body: &str) {
@@ -1048,6 +1048,7 @@ mod tests {
             let (mut s, _) = listener.accept().unwrap();
             let req = request(&mut s);
             assert!(req.starts_with("POST /v1/chat/completions "));
+            assert!(req.contains("lucille_memory_data"));
             let events = [
                 r#"data: {"choices":[{"delta":{"reasoning_content":"think"}}]}"#,
                 r#"data: {"choices":[{"delta":{"content":"<think>texto comum</think> hello"}}]}"#,
@@ -1068,7 +1069,7 @@ mod tests {
         let response = run_async(chat_async(
             format!("http://{address}"),
             None,
-            json!({"model":"gguf","messages":[],"stream":true}),
+            json!({"model":"gguf","messages":[crate::memory::context_with_budget(&[json!({"id":1,"data":"Contexto sintético de teste"})],1024).0.unwrap(),json!({"role":"user","content":"Teste"})],"stream":true}),
             &cancel,
             &|kind, _| events.lock().unwrap().push(kind.to_string()),
         ))
@@ -1103,7 +1104,7 @@ mod tests {
         let response = run_async(chat_async(
             format!("http://{address}"),
             None,
-            json!({"model":"gguf","messages":[],"stream":true}),
+            json!({"model":"gguf","messages":[crate::memory::context_with_budget(&[json!({"id":1,"data":"Contexto sintético de teste"})],1024).0.unwrap()],"stream":true}),
             &cancel,
             &|_, _| cancel.store(true, Ordering::Relaxed),
         ))

@@ -44,6 +44,7 @@
     <button class="aba ativa" data-vista="agente" data-dica="Agente · Ctrl+1"><svg><use href="#i-chat"/></svg></button>
     <button class="aba" data-vista="imagens" data-dica="Imagens · Ctrl+2"><svg><use href="#i-imagem"/></svg></button>
     <button class="aba" data-vista="painel" data-dica="Painel · Ctrl+3"><svg><use href="#i-painel"/></svg></button>
+    <button class="aba" data-vista="memoria" data-dica="Memória · Ctrl+5" aria-label="Memória"><svg><use href="#i-arquivo"/></svg></button>
     <div class="espaco"></div>
     <button id="tema-rapido" class="aba" data-dica="Tema"><svg><use href="#i-sistema"/></svg></button>
     <button id="status-global" class="aba status" data-dica="Serviços"><span class="ponto"></span></button>
@@ -167,6 +168,56 @@
       </section>
     </main>
 
+    <main id="vista-memoria" class="vista config" hidden>
+      <h1>Memória</h1>
+      <p class="sutil">Armazenamento privado local. Candidatos e conflitos precisam de revisão; apenas memórias ativas são recuperadas. O contexto selecionado é enviado ao backend de conversa configurado.</p>
+      <p id="mem-status" role="status" aria-live="polite"></p>
+      <section class="secao cartao mem-controls">
+        <label><input type="checkbox" id="mem-retrieval"> Recuperação automática</label>
+        <label><input type="checkbox" id="mem-extraction"> Extração automática de candidatos</label>
+        <label>Orçamento estimado de tokens <input type="number" id="mem-budget" min="128" max="4096" step="128"></label>
+        <label>Projeto para novas conversas <select id="mem-active-project"></select></label>
+        <p class="sutil pequeno">Conversas já registradas mantêm o projeto de origem. Selecione o projeto antes de iniciar outra conversa.</p>
+        <button id="mem-options">Salvar opções</button>
+        <pre id="mem-stats" class="sutil"></pre>
+      </section>
+      <section class="secao">
+        <h2>Consultar e revisar</h2>
+        <div class="mem-controls">
+          <input id="mem-query" aria-label="Pesquisar memória" placeholder="Busca local FTS5">
+          <select id="mem-filter-project" aria-label="Filtrar projeto"></select>
+          <select id="mem-filter-kind" aria-label="Filtrar categoria"></select>
+          <select id="mem-filter-state" aria-label="Filtrar estado"></select>
+          <button id="mem-search">Pesquisar</button><button id="mem-new">Nova memória</button>
+        </div>
+        <p class="sutil pequeno">Até 200 resultados por consulta. Dados exibidos como texto. Para resolver uma contradição, marque a informação antiga como obsoleta e aprove a atual.</p>
+        <div id="mem-list"></div>
+        <form id="mem-form" class="cartao mem-controls" hidden>
+          <h3 id="mem-editor-title">Memória</h3>
+          <label>Categoria <select id="mem-kind"></select></label>
+          <label>Projeto <select id="mem-project"></select></label>
+          <label>Estado <select id="mem-state"></select></label>
+          <label>Importância (1–5) <input id="mem-importance" type="number" min="1" max="5" value="3" required></label>
+          <label>Chave do fato (mesma chave detecta contradição) <input id="mem-key" maxlength="120"></label>
+          <label class="mem-wide">Conteúdo <textarea id="mem-content" rows="5" maxlength="8000" required></textarea></label>
+          <p class="sutil">Não armazene credenciais. A detecção automática de segredos é conservadora e não é infalível.</p>
+          <button type="submit" class="primario">Salvar memória</button><button type="button" id="mem-close">Fechar editor</button>
+        </form>
+      </section>
+      <section class="secao">
+        <h2>Projetos e retomada de tarefas</h2>
+        <select id="mem-project-edit" aria-label="Selecionar projeto para editar"></select>
+        <button id="mem-project-load">Editar projeto</button><button id="mem-project-new">Novo projeto</button>
+        <form id="mem-project-form" class="cartao mem-controls" hidden><div id="mem-project-fields" class="mem-wide"></div><button type="submit">Salvar projeto</button></form>
+      </section>
+      <section class="secao cartao mem-controls">
+        <h2 class="mem-wide">Consolidação e cópias locais</h2>
+        <p class="sutil mem-wide">Consolidação manual em lotes de até 20 conversas: trechos literais do usuário viram candidatos, mantendo as fontes. Nenhum modelo é iniciado. Backups contêm dados privados: guarde-os fora do GitHub. A restauração só afeta SQLite; históricos JSON permanecem intactos.</p>
+        <button id="mem-consolidate">Consolidar lote</button><button id="mem-stop">Interromper consolidação</button>
+        <button id="mem-export">Exportar JSON local</button><button id="mem-backup">Criar backup SQLite</button>
+        <button id="mem-backups-refresh">Listar backups</button><select id="mem-backup-list" aria-label="Backup local"></select><button id="mem-restore">Validar e restaurar</button>
+      </section>
+    </main>
     <main id="vista-config" class="vista config" hidden>
       <h1>Configurações</h1>
 
@@ -380,7 +431,7 @@
       <section class="secao">
         <h2>Atalhos</h2>
         <div class="cartao atalhos">
-          <span>Trocar de aba</span><kbd>Ctrl+1 … 4</kbd>
+          <span>Trocar de aba</span><kbd>Ctrl+1 … 5</kbd>
           <span>Nova conversa</span><kbd>Ctrl+N</kbd>
           <span>Mostrar ou esconder conversas</span><kbd>Ctrl+B</kbd>
           <span>Buscar conversas</span><kbd>Ctrl+K</kbd>
@@ -402,5 +453,6 @@
   <script src="config.js"></script>
   <script src="modelos.js"></script>
   <script src="hardware-settings.js"></script>
+  <script src="memory.js"></script>
 </body>
 </html>
