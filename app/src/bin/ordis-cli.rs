@@ -1,4 +1,4 @@
-//! `ordis-cli estado|iniciar|parar|perguntar "texto"|proxmox <consulta> [nó]|imagem "prompt"|benchmark [opções]`.
+//! `ordis-cli estado|diagnostico|iniciar|parar|perguntar "texto"|proxmox <consulta> [nó]|imagem "prompt"|benchmark [opções]`.
 //! Executável de console separado, porque o ORDIS.exe é de janela e o
 //! terminal não espera por ele.
 #![allow(dead_code)]
@@ -86,7 +86,7 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
         }
         _ => {
             return Err(format!(
-                "Ação desconhecida: {acao}. Use estado, iniciar, parar, perguntar, proxmox, imagem ou benchmark."
+                "Ação desconhecida: {acao}. Use estado, diagnostico, iniciar, parar, perguntar, proxmox, imagem ou benchmark."
             ))
         }
     }

@@ -137,6 +137,8 @@ pub struct ComfyStatus {
     pub endpoint: String,
     pub connected: bool,
     pub managed: bool,
+    pub management_requested: bool,
+    pub process_owned: bool,
     pub checkpoints: Option<Vec<String>>,
     pub checkpoint_source: String,
     pub model_available: Option<bool>,
@@ -182,6 +184,11 @@ pub fn comfy(c: &Caminhos) -> ComfyStatus {
             Err("ComfyUI respondeu sem informações de sistema.".into())
         }
     });
+    let process_owned = settings.manage_comfy
+        && crate::controle::ler_estado(c)
+            .get("imagens")
+            .is_some_and(|info| crate::controle::rastreado(&mut System::new(), info));
+    let managed = effective_management(settings.manage_comfy, connection.is_ok(), process_owned);
     let advertised = connection
         .as_ref()
         .ok()
@@ -232,13 +239,19 @@ pub fn comfy(c: &Caminhos) -> ComfyStatus {
     ComfyStatus {
         endpoint,
         connected: connection.is_ok(),
-        managed: settings.manage_comfy,
+        managed,
+        management_requested: settings.manage_comfy,
+        process_owned,
         checkpoints,
         checkpoint_source: source.into(),
         model_available,
         workflow_configured,
         error: connection.err(),
     }
+}
+
+fn effective_management(requested: bool, connected: bool, owned: bool) -> bool {
+    requested && (!connected || owned)
 }
 
 pub fn snapshot(c: &Caminhos) -> Value {
@@ -281,6 +294,14 @@ use std::io::Read;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn healthy_untracked_comfy_remains_external_even_on_managed_endpoint() {
+        assert!(!effective_management(true, true, false));
+        assert!(effective_management(true, true, true));
+        assert!(effective_management(true, false, false));
+        assert!(!effective_management(false, true, false));
+    }
 
     #[test]
     fn external_comfy_reports_missing_checkpoint_and_is_not_registered_or_stopped() {

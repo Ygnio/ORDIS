@@ -351,9 +351,9 @@ pub fn gerar(
     let inicio = Instant::now();
     let id = controle::sufixo_unico();
     let modelo = modelos::imagem(c);
-    let settings = crate::settings::load(c);
-    let base = settings.comfy_url;
-    let managed_comfy = settings.manage_comfy;
+    let comfy = crate::diagnostics::comfy(c);
+    let base = comfy.endpoint.clone();
+    let managed_comfy = comfy.managed;
     let base_global = versao_marcador(c);
     let global = || versao_marcador(c).is_some_and(|v| Some(v) != base_global);
     let checar = || -> Result<(), Erro> {
@@ -376,7 +376,7 @@ pub fn gerar(
     let resultado = (|| -> Result<Value, Erro> {
         let p = validar(args, modelo.passos)?;
         let grafo = if modelo.fluxo.is_empty() {
-            let available = crate::diagnostics::comfy(c).checkpoints.unwrap_or_default();
+            let available = comfy.checkpoints.as_deref().unwrap_or_default();
             if !crate::diagnostics::safe_model_name(&modelo.checkpoint)
                 || !available.contains(&modelo.checkpoint)
             {

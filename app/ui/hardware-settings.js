@@ -55,7 +55,7 @@
 
   function publishComfy(status) {
     const count = status.checkpoints == null ? 'Checkpoints desconhecidos' : status.checkpoints.length ? `${status.checkpoints.length} checkpoint(s) encontrado(s)` : 'Nenhum checkpoint encontrado';
-    $('comfy-estado').textContent = `${status.connected ? 'Conectado' : 'Desconectado'} · ${status.managed ? 'gerenciado pelo ORDIS' : 'externo'} · ${count}${status.error ? ` · ${status.error}` : ''}`;
+    $('comfy-estado').textContent = `${status.connected ? 'Conectado' : 'Desconectado'} · ${status.managed ? 'gerenciado pelo ORDIS' : 'externo'} · ${count}${status.management_requested && status.connected && !status.process_owned ? ' · Processo externo detectado e preservado; não foi iniciado pelo ORDIS' : ''}${status.error ? ` · ${status.error}` : ''}`;
     window.dispatchEvent(new CustomEvent('comfy-status', { detail: status }));
   }
 

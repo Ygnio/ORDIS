@@ -25,7 +25,7 @@ Faça as etapas com o servidor llama.cpp já iniciado pelo usuário e configurad
 
 1. Abra o ORDIS. Confirme que a janela aparece mesmo com TabbyAPI ausente e ComfyUI parado.
 2. Abra **Configurações > Modelos**, selecione llama.cpp e salve o endpoint `http://127.0.0.1:8080`.
-3. Use **Testar conexão**. Confirme que o modelo informado corresponde ao GGUF carregado no servidor.
+3. Use **Testar backend salvo**. Confirme que o modelo informado corresponde ao GGUF carregado no servidor.
    Confirme que contexto e limite por resposta aparecem como desconhecidos quando o servidor não os anuncia. A ferramenta `session_status` deve informar `Lucille`, backend `llama.cpp`, conexão ativa e limites nulos, sem reaproveitar contexto ou opções do TabbyAPI.
    Confirme que a tela de modelos oculta as opções TabbyAPI enquanto llama.cpp está selecionado e que, ao voltar ao TabbyAPI, os valores anteriores continuam salvos.
    No rodapé do chat, confirme o formato `Lucille · llama.cpp · conectado`; pare o servidor manualmente para verificar que a interface mostre desconectado e volte a conectado após reiniciá-lo manualmente.

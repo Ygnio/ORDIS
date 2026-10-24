@@ -83,7 +83,9 @@ fn local_settings_save(c: State<'_, Ctx>, value: settings::Settings) -> Result<(
     }
     let old = settings::load(&c.caminhos);
     if (old.comfy_url != value.comfy_url || old.manage_comfy != value.manage_comfy)
-        && controle::ler_estado(&c.caminhos).contains_key("imagens")
+        && controle::ler_estado(&c.caminhos)
+            .get("imagens")
+            .is_some_and(|info| controle::rastreado(&mut sysinfo::System::new(), info))
     {
         return Err("Desligue o ComfyUI gerenciado pelo painel antes de alterar seu endereço ou gerenciamento.".into());
     }

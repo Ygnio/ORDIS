@@ -195,7 +195,8 @@ pub fn painel(c: &Caminhos) -> Painel {
             } else {
                 crate::settings::manages_comfy(c)
             };
-            let pronto = (ativo || !managed) && pronto(c, nome);
+            let pronto = (nome == "imagens" || ativo || !managed) && pronto(c, nome);
+            let managed = managed && (nome != "imagens" || ativo || !pronto);
             let situacao = if pronto {
                 "pronto"
             } else if ativo && managed {
@@ -348,7 +349,10 @@ pub(crate) fn iniciar_servico(
     progresso: &dyn Fn(&str),
     cancelado: &dyn Fn() -> Result<(), String>,
 ) -> Result<(), String> {
-    if nome == "imagens" && !crate::settings::manages_comfy(c) {
+    if nome == "imagens"
+        && (!crate::settings::manages_comfy(c)
+            || (!estado.get(nome).is_some_and(|info| rastreado(sys, info)) && pronto(c, nome)))
+    {
         return if pronto(c, nome) {
             Ok(())
         } else {
