@@ -193,7 +193,7 @@ impl Store {
                     Ok(Options {
                         retrieval: r.get(0)?,
                         extraction: r.get(1)?,
-                        token_budget: r.get(2)?,
+                        token_budget: r.get::<_, u32>(2)? as usize,
                         project_id: r.get(3)?,
                     })
                 },
@@ -204,7 +204,7 @@ impl Store {
         if !(128..=4096).contains(&o.token_budget) {
             return Err("Orçamento deve estar entre 128 e 4096 tokens estimados.".into());
         }
-        self.db.execute("UPDATE settings SET retrieval=?1,extraction=?2,token_budget=?3,project_id=?4 WHERE id=1",params![o.retrieval,o.extraction,o.token_budget,o.project_id]).map_err(error)?;
+        self.db.execute("UPDATE settings SET retrieval=?1,extraction=?2,token_budget=?3,project_id=?4 WHERE id=1",params![o.retrieval,o.extraction,o.token_budget as i64,o.project_id]).map_err(error)?;
         Ok(())
     }
     fn list(
@@ -442,7 +442,7 @@ impl Store {
         let mut stmt=self.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) ORDER BY (bm25(memories_fts) - m.importance*0.25 - CASE WHEN m.project_id IS ?2 AND ?2 IS NOT NULL THEN 2 ELSE 0 END - CASE WHEN m.kind IN ('constraint','decision','preference') THEN 0.5 ELSE 0 END - CASE WHEN m.provenance IN ('user','manual') THEN 0.5 ELSE 0 END - 1.0/(1.0+max(0,?3-m.updated_at)/86400.0)) ASC LIMIT 60").map_err(error)?;
         let rows=stmt.query_map(params![fts,o.project_id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
         let (context, ids, tokens) = context_with_budget(&rows, o.token_budget);
-        self.db.execute("INSERT INTO retrieval_audit(conversation_id,memory_ids,estimated_tokens,created_at) VALUES(?1,?2,?3,?4)",params![conversation,json!(ids).to_string(),tokens,now()]).map_err(error)?;
+        self.db.execute("INSERT INTO retrieval_audit(conversation_id,memory_ids,estimated_tokens,created_at) VALUES(?1,?2,?3,?4)",params![conversation,json!(ids).to_string(),tokens as i64,now()]).map_err(error)?;
         self.db.execute("DELETE FROM retrieval_audit WHERE id NOT IN (SELECT id FROM retrieval_audit ORDER BY id DESC LIMIT 1000)",[]).map_err(error)?;
         Ok(context)
     }
