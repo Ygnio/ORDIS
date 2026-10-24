@@ -104,7 +104,10 @@ jobs:
           New-Item -ItemType Directory -Force $appOut, (Join-Path $appOut 'ui'), (Join-Path $stage 'config'), (Join-Path $stage 'scripts'), (Join-Path $stage 'agente/workspace'), (Join-Path $stage 'docs') | Out-Null
           Copy-Item app/target/release/ordis.exe (Join-Path $appOut 'ORDIS.exe')
           Copy-Item app/target/release/ordis-cli.exe (Join-Path $appOut 'ordis-cli.exe')
-          Copy-Item app/target/release/WebView2Loader.dll $appOut
+          $loader = Get-ChildItem app/target -Recurse -File -Filter WebView2Loader.dll | Select-Object -First 1
+          if (-not $loader) { throw 'WebView2Loader.dll não foi encontrado na saída GNU do Tauri.' }
+          Write-Host "WebView2 loader: $($loader.FullName)"
+          Copy-Item $loader.FullName $appOut
           Copy-Item app/ui/ordis.png (Join-Path $appOut 'ui/ordis.png')
           Copy-Item config/paths.json, config/tabbyapi-inicial.yml, config/ordis_qwen_thinking.yml, config/runtime-packages.txt, config/images-requirements.lock.txt, config/README.md (Join-Path $stage 'config')
           Copy-Item scripts/serve_inference.py, scripts/service_shutdown.py, scripts/agent_web_search.py, scripts/ordis_token_monitor.py, scripts/token_counter_paths.py (Join-Path $stage 'scripts')
