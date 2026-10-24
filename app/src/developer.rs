@@ -154,7 +154,7 @@ pub fn begin(c: &Caminhos, id: &str, title: &str) {
     }
 }
 pub fn finish(c: &Caminhos, id: &str, state: &str) {
-    if !load(c).permissions.enabled {
+    if !private(c).is_ok_and(|p| p.join("developer-state.sqlite3").is_file()) {
         return;
     }
     if let Ok(db) = db(c) {
@@ -561,6 +561,9 @@ fn prepare(scope: &Scope, cfg: &Config, name: &str, args: Value) -> Result<Prepa
         }
         "workspace_mkdir" | "workspace_move" | "workspace_delete" => {
             let a: MutateArgs = parse(args)?;
+            if name != "workspace_move" && a.destination.is_some() {
+                return Err("destination só é válido para workspace_move.".into());
+            }
             reason = a.reason;
             p.path = a.path;
             p.destination = a.destination;
@@ -675,7 +678,7 @@ fn prepare(scope: &Scope, cfg: &Config, name: &str, args: Value) -> Result<Prepa
         .as_ref()
         .map(|b| String::from_utf8_lossy(b).to_string())
         .unwrap_or_default();
-    let preview = if p.after.is_some() {
+    let preview = if p.after.is_some() || p.kind == "workspace_delete" {
         format!(
             "--- {}\n+++ {}\n{}{}",
             p.path,
@@ -830,6 +833,16 @@ fn apply(
             .map_err(|_| "Não foi possível criar backup; alteração cancelada.")?;
     }
     if !p.kind.starts_with("execute:") && target.path.exists() {
+        if matches!(p.kind.as_str(), "workspace_move" | "workspace_delete") && p.before.is_none() {
+            if !target.path.is_dir()
+                || fs::read_dir(&target.path)
+                    .map_err(|_| "Diretório indisponível.")?
+                    .next()
+                    .is_some()
+            {
+                return Err("Conflito: diretório vazio mudou após a proposta.".into());
+            }
+        }
         target._locks.pop();
     }
     match p.kind.as_str() {
@@ -954,6 +967,9 @@ fn execute_with(
         }
         "workspace_search" => {
             let a: SearchArgs = parse(args)?;
+            if !["", "text", "names", "symbols"].contains(&a.mode.as_str()) {
+                return Err("Modo de busca inválido.".into());
+            }
             if !cfg.permissions.allow_read || a.query.is_empty() || a.query.len() > 200 {
                 return Err("Busca não autorizada ou inválida.".into());
             }
@@ -1052,7 +1068,11 @@ fn execute_with(
         return decision.map(|_| json!({"state":state,"modified":false}));
     }
     if serde_json::to_value(load(c)).ok() != serde_json::to_value(&cfg).ok() {
-        return Err("Permissões/configuração mudaram; proponha novamente.".into());
+        let message = "Permissões/configuração mudaram; proponha novamente.";
+        let value = json!({"state":"failed","error":message});
+        journal(c, &id, task, name, "failed", &proposal, &value)?;
+        event(json!({"state":"failed","id":id,"result":value}));
+        return Err(message.into());
     }
     journal(c, &id, task, name, "running", &proposal, &json!({}))?;
     event(json!({"state":"running","id":id,"proposal":proposal}));

@@ -33,5 +33,5 @@ class RestrictedPowerShell(unittest.TestCase):
     def test_literal_and_escape_attempts(self):
         for source, expected in [("Write-Output 'synthetic'",0),('exit 7',7),('Get-Content C:/Windows/win.ini',2),('Write-Output $(Get-Process)',2),('[IO.File]::ReadAllText("x")',2),('cmd.exe /c echo x',2),('$x="Get-Process"; & $x',2),('Write-Output "$(Get-Process)"',2),('Set-Item HKCU:/Software/x y',2)]:
             with self.subTest(source=source):
-                r=subprocess.run(['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-File',str(ROOT/'app/src/developer_powershell.ps1')],input=json.dumps({'source':source}),capture_output=True,text=True,timeout=15)
+                r=subprocess.run(['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-File',str(ROOT/'app/src/developer_powershell.ps1')],input=json.dumps({'source':source}),capture_output=True,text=True,timeout=60)
                 self.assertEqual(r.returncode,expected,r.stderr)

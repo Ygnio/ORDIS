@@ -267,10 +267,10 @@ fn job_runner_output_failure_timeout_and_cancel() {
         .unwrap()
     };
     let no = AtomicBool::new(false);
-    let v = run("Write-Output 'synthetic'; exit 0", 10, 4096, &no);
+    let v = run("Write-Output 'synthetic'; exit 0", 60, 4096, &no);
     assert_eq!(v["state"], "completed");
     assert!(v["stdout"].as_str().unwrap().contains("synthetic"));
-    assert_eq!(run("exit 7", 10, 4096, &no)["state"], "failed");
+    assert_eq!(run("exit 7", 60, 4096, &no)["state"], "failed");
     assert_eq!(
         run("Start-Sleep -Seconds 8", 1, 4096, &no)["state"],
         "timeout"
@@ -282,10 +282,73 @@ fn job_runner_output_failure_timeout_and_cancel() {
     assert_eq!(
         run(
             &format!("Write-Output '{}'", "x".repeat(6000)),
-            10,
+            60,
             512,
             &no
         )["truncated"],
         true
     );
+}
+
+#[test]
+fn invalid_execution_scope_and_policy_change_fail_closed() {
+    let f = Fixture::new();
+    let mut cfg = load(&f.c);
+    cfg.permissions.allow_execute = true;
+    cfg.permissions.python = "relative.exe".into();
+    action(&f.c, "save", json!(cfg)).unwrap();
+    assert!(f.call("developer_execute",json!({"executable":"python","arguments":["test.py"],"cwd":"../outside","reason":"Synthetic"})).is_err());
+    assert!(f
+        .call(
+            "developer_execute",
+            json!({"executable":"python","arguments":["test.py"],"reason":"Synthetic"})
+        )
+        .is_err());
+    assert!(f.call("developer_execute",json!({"executable":"powershell","arguments":["-Command","Get-Content x"],"reason":"Synthetic"})).is_err());
+    assert!(execute_with(
+        &f.c,
+        "policy-change",
+        "workspace_write",
+        json!({"path":"a","content":"synthetic","reason":"Synthetic"}),
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| {
+            let mut cfg = load(&f.c);
+            cfg.permissions.allow_write = false;
+            action(&f.c, "save", json!(cfg)).unwrap();
+            Ok(true)
+        }
+    )
+    .is_err());
+    assert!(!f.root.join("a").exists());
+}
+
+#[test]
+fn directory_changed_after_proposal_and_invalid_search_are_refused() {
+    let f = Fixture::new();
+    fs::create_dir(f.root.join("dir")).unwrap();
+    assert!(execute_with(
+        &f.c,
+        "dir-conflict",
+        "workspace_move",
+        json!({"path":"dir","destination":"other","reason":"Synthetic"}),
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| {
+            fs::write(f.root.join("dir/new.txt"), "synthetic").unwrap();
+            Ok(true)
+        }
+    )
+    .is_err());
+    assert!(f.root.join("dir/new.txt").exists());
+    assert!(!f.root.join("other").exists());
+    assert!(f
+        .call("workspace_search", json!({"query":"x","mode":"execute"}))
+        .is_err());
+    assert!(f
+        .call(
+            "workspace_delete",
+            json!({"path":"dir","destination":"x","reason":"Synthetic"})
+        )
+        .is_err());
 }

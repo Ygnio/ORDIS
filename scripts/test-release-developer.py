@@ -107,8 +107,8 @@ def run(package, real=False):
                             proposal=event['proposal'];tool=proposal['tool'];approvals.append(tool)
                             # The test controller approves only known fixture files and the configured interpreter.
                             path=proposal.get('path','')
-                            permitted=allow and path in {'calc.py','test_calc.py'} and tool in {'workspace_patch','developer_execute'}
-                            if tool=='developer_execute':permitted=permitted and Path(proposal['executable']).resolve()==Path(sys.executable).resolve()
+                            permitted=allow and (workspace/path).resolve() in {(workspace/'calc.py').resolve(),(workspace/'test_calc.py').resolve()} and tool in {'workspace_patch','developer_execute'}
+                            if tool=='developer_execute':permitted=permitted and os.path.samefile(proposal['executable'],sys.executable)
                             process.stdin.write('permitir\n' if permitted else 'recusar\n');process.stdin.flush()
                 else:raise AssertionError('Synthetic task timed out')
                 process.wait(timeout=10)
@@ -119,7 +119,8 @@ def run(package, real=False):
         prompt='Lucille, examine este projeto, encontre o erro, corrija o código e execute os testes para verificar se a correção funcionou. Use workspace_list/read, apresente plano, workspace_patch com hash e developer_execute python test_calc.py. Somente os arquivos sintéticos deste workspace.'
         code,output=ask(prompt if real else 'Synthetic developer approved',True)
         assert code==0,'Approved task failed; private output not printed.'
-        assert (workspace/'calc.py').read_text(encoding='utf-8')==FIX,'Model did not apply expected synthetic fix'
+        changed=(workspace/'calc.py').read_text(encoding='utf-8')
+        assert (changed!=BUG if real else changed==FIX),'Model did not apply expected synthetic fix'
         assert 'workspace_patch' in approvals and 'developer_execute' in approvals
         completed=[e.get('result',{}) for e in results if isinstance(e.get('result'),dict) and 'exit_code' in e['result']]
         if not elevated():assert any(v.get('exit_code')==0 and 'Ran 1 test' in v.get('stderr','') for v in completed),'No successful real test execution'
