@@ -657,12 +657,13 @@ async fn chat_async(
                 if cancel.load(Ordering::Relaxed) {let metrics=metrics.snapshot("cancelled");emit("metricas",json!(metrics));return Ok(ChatResponse{text:String::new(),reasoning:String::new(),tool_calls:vec![],metrics});}
                 if waiting_update.elapsed()>=Duration::from_millis(250){emit("metricas",json!(metrics.snapshot("streaming")));waiting_update=std::time::Instant::now();}
             },
-            response=&mut pending=>break response.map_err(|e|format!("Falha ao falar com o backend: {e}"))?,
+            response=&mut pending=>break response.map_err(|e|{emit("metricas",json!(metrics.snapshot("interrupted")));format!("Falha ao falar com o backend: {e}")})?,
         }
     };
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
+        emit("metricas", json!(metrics.snapshot("interrupted")));
         return Err(format!(
             "Backend recusou o pedido (HTTP {}): {}",
             status.as_u16(),
@@ -696,7 +697,10 @@ async fn chat_async(
         };
         let Some(item) = next else { break };
         let Some(chunk) = item else { break };
-        let chunk = chunk.map_err(|e| format!("Stream do backend interrompido: {e}"))?;
+        let chunk = chunk.map_err(|e| {
+            emit("metricas", json!(metrics.snapshot("interrupted")));
+            format!("Stream do backend interrompido: {e}")
+        })?;
         for event in decoder.push(&chunk) {
             if event == "[DONE]" {
                 finished = true;
