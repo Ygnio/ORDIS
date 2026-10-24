@@ -66,12 +66,6 @@ jobs:
             Write-Error "Private/generated files are tracked:`n$($forbidden -join "`n")"
           }
 
-      - name: Scan for credentials
-        uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_VERSION: latest
-
       - name: Check formatting of new Rust module
         shell: pwsh
         run: rustfmt --edition 2021 --check app/src/backends.rs
@@ -131,3 +125,19 @@ jobs:
           name: cargo-test-msvc-log
           path: ${{ runner.temp }}/cargo-test-msvc.log
           if-no-files-found: ignore
+
+  credential-scan:
+    name: Credential scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for credentials
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: latest
+          GITLEAKS_ENABLE_COMMENTS: false
