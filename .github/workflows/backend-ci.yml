@@ -70,6 +70,7 @@ jobs:
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: latest
 
       - name: Check formatting of new Rust module
         shell: pwsh
