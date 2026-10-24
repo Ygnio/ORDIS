@@ -256,6 +256,7 @@ fn pedir(
 fn ouvir_progresso(base: &str, cliente: &str, parar: Arc<AtomicBool>) -> Receiver<Value> {
     let (tx, rx) = mpsc::sync_channel(64);
     let base = base.to_string();
+    let cliente = cliente.to_string();
     thread::spawn(move || {
         let Ok(mut url) = url::Url::parse(&format!("{base}/ws")) else {
             return;
@@ -277,7 +278,7 @@ fn ouvir_progresso(base: &str, cliente: &str, parar: Arc<AtomicBool>) -> Receive
             return;
         };
         let _ = url.set_scheme("ws");
-        url.query_pairs_mut().append_pair("clientId", cliente);
+        url.query_pairs_mut().append_pair("clientId", &cliente);
         let _ = tcp.set_read_timeout(Some(Duration::from_millis(500)));
         let Ok((mut ws, _)) = tungstenite::client(url.as_str(), tcp) else {
             return;
