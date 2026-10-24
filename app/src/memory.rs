@@ -647,6 +647,23 @@ impl Store {
             state: "candidate".into(),
             importance: 2,
         };
+        for (ordinal, text) in &rows {
+            if let Some(kind) = classify(text) {
+                self.put(
+                    None,
+                    &Input {
+                        kind: kind.into(),
+                        content: text.clone(),
+                        project_id: p,
+                        fact_key: extract_key(text),
+                        state: "candidate".into(),
+                        importance: 3,
+                    },
+                    "user",
+                    Some((&id, *ordinal)),
+                )?;
+            }
+        }
         let mid = self.put(None, &input, "extractive", Some((&id, last)))?;
         let tx = self.db.transaction().map_err(error)?;
         for (ordinal, _) in rows {

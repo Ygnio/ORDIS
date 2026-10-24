@@ -399,6 +399,7 @@ fn toggles_independent_and_consolidation_idempotent_preserves_sources() {
     assert!(s.list("", None, "", "").unwrap().is_empty());
     assert!(s.consolidate_one().unwrap());
     assert!(!s.consolidate_one().unwrap());
+    assert_eq!(s.list("", None, "decision", "candidate").unwrap().len(), 1);
     let rows = s.list("", None, "summary", "").unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state, "candidate");

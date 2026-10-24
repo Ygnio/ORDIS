@@ -40,7 +40,7 @@ Memórias selecionadas são enviadas ao **backend de conversa configurado** como
 
 Abra Memória (Ctrl+5). Busca, filtros, origem, datas, CRUD, aprovação e estatísticas são funcionais. Recuperação e extração têm controles independentes. Selecione o projeto antes de iniciar uma nova conversa. A primeira mensagem registrada fixa sua origem; reabrir uma conversa mantém esse projeto, mesmo após mudar a seleção padrão. Projetos guardam objetivo, repositório, branch, arquivos, arquitetura, problemas, soluções, testes, próximas tarefas e estado de retomada como texto, sem executar Git, terminal ou modificar código.
 
-Consolidação é manual, em segundo plano, limitada a 20 conversas por lote e interrompível entre conversas. Gera resumos **extrativos** dos últimos 20 trechos de usuário (até 3000 caracteres), candidatos com referências à fonte. Não é resumo semântico por LLM. A repetição sem mensagens novas não duplica o resumo. Não apaga fontes nem lê históricos JSON antigos. Revise decisões extraídas, associe projetos e marque fatos obsoletos manualmente.
+Consolidação é manual, em segundo plano, limitada a 20 conversas por lote e interrompível entre conversas. Gera resumos **extrativos** dos últimos 20 trechos de usuário (até 3000 caracteres), candidatos com referências à fonte. Reaplica a classificação nesses trechos, identificando decisões e outros fatos explícitos mesmo quando a extração estava desabilitada, deduplicando sem sobrescrever aprovações existentes. Não é resumo semântico por LLM. A repetição sem mensagens novas não duplica o resumo. Não apaga fontes nem lê históricos JSON antigos. Revise decisões extraídas, associe projetos e marque fatos obsoletos manualmente.
 
 ## Exportação, backup e restauração
 
