@@ -36,7 +36,9 @@ impl Profile {
                             .trim();
                         if !value.is_empty()
                             && value.len() <= 80
-                            && !["ordis", "uma", "um"].contains(&value.to_lowercase().as_str())
+                            && !["ordis", "uma", "um", "assistente", "assistant"].contains(
+                                &value.to_lowercase().split_whitespace().next().unwrap_or(""),
+                            )
                             && value
                                 .chars()
                                 .all(|c| c.is_alphabetic() || c == ' ' || c == '-')
@@ -90,6 +92,10 @@ mod tests {
     #[test]
     fn default_and_custom_legacy_are_distinct() {
         assert_eq!(Profile::default().name, "Lucille");
+        assert_eq!(
+            Profile::legacy("Você é uma assistente técnica.").name,
+            "Lucille"
+        );
         assert_eq!(
             Profile::legacy("Você é Aurora, assistente local.\nSeja breve.").name,
             "Aurora"

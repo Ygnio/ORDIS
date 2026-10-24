@@ -203,6 +203,11 @@ impl Store {
             .optional()
             .map_err(error)
     }
+    fn save_profile(&self, profile: &crate::identity::Profile) -> Result<(), String> {
+        profile.validate()?;
+        self.db.execute("INSERT INTO identity_profile VALUES(1,?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,personality=excluded.personality,instructions=excluded.instructions,updated_at=excluded.updated_at",params![profile.name.trim(),profile.description,profile.personality,profile.instructions,now()]).map_err(error)?;
+        Ok(())
+    }
     fn dashboard(&self) -> Result<Value, String> {
         let mut states = serde_json::Map::new();
         for state in STATES {
@@ -711,13 +716,21 @@ impl Store {
             .map_err(error)?;
         let last = rows.last().map(|r| r.0).unwrap_or(after);
         drop(q);
+        let p: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT project_id FROM conversations WHERE id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .map_err(error)?;
         let mut filtered = Vec::new();
         for (ordinal, text) in rows {
             let rejected: bool = self
                 .db
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1)",
-                    [fingerprint(&text)],
+                    "SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND project_id IS ?2)",
+                    params![fingerprint(&text),p],
                     |r| r.get(0),
                 )
                 .map_err(error)?;
@@ -739,14 +752,6 @@ impl Store {
             .chars()
             .take(3000)
             .collect::<String>();
-        let p: Option<i64> = self
-            .db
-            .query_row(
-                "SELECT project_id FROM conversations WHERE id=?1",
-                [&id],
-                |r| r.get(0),
-            )
-            .map_err(error)?;
         let mut content = content;
         while content.len() > 8000 {
             content.pop();
@@ -1134,8 +1139,7 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
         "identity_save" => {
             let profile: crate::identity::Profile =
                 serde_json::from_value(args).map_err(|_| "Perfil inválido.")?;
-            profile.validate()?;
-            s.db.execute("INSERT INTO identity_profile VALUES(1,?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,personality=excluded.personality,instructions=excluded.instructions,updated_at=excluded.updated_at",params![profile.name.trim(),profile.description,profile.personality,profile.instructions,now()]).map_err(error)?;
+            s.save_profile(&profile)?;
             Ok(json!(true))
         }
         "dashboard" => s.dashboard(),
