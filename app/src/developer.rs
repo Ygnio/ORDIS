@@ -1317,7 +1317,7 @@ pub fn definitions(c: &Caminhos) -> Vec<Value> {
         }
     }
     if cfg.permissions.allow_execute {
-        add("developer_execute","Executa script aprovado usando runtime instalado. executable: python ou powershell; arguments: um script na raiz. Python restrito a funções puras, math e unittest com imports locais; sem OS, rede, arquivos, reflexão, decoradores. PowerShell restrito a Write-Output, Start-Sleep, throw e exit literais. Requer aprovação humana individual; falha de testes é recuperável.",json!({"executable":{"type":"string","enum":["python","powershell"]},"arguments":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":1},"cwd":path,"reason":reason}),vec!["executable","arguments","reason"]);
+        add("developer_execute","Propõe executar um script usando runtime instalado. Chame esta ferramenta para abrir o cartão nativo de aprovação; não peça confirmação apenas em texto. Ela aguarda a decisão humana e só então executa. executable: python ou powershell; arguments: um script na raiz. Python restrito a funções puras, math e unittest com imports locais; sem OS, rede, arquivos, reflexão, decoradores. PowerShell restrito a Write-Output, Start-Sleep, throw e exit literais. Requer aprovação humana individual; falha de testes é recuperável.",json!({"executable":{"type":"string","enum":["python","powershell"]},"arguments":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":1},"cwd":path,"reason":reason}),vec!["executable","arguments","reason"]);
     }
     for name in [
         "developer_environment",

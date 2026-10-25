@@ -23,7 +23,7 @@ Nenhum modelo adicional, serviço externo ou biblioteca pesada foi adicionado.
    e/ou de `powershell.exe` instalado no Windows. Nada é instalado automaticamente.
 4. Peça uma tarefa no chat. Inspecione cada cartão: motivo, caminho, diff,
    executável, argumentos, cwd e hashes. Permitir vale somente para aquela
-   operação. Recusar bloqueia novas mutações nesse turno. Cancelar interrompe
+   operação. Recusar encerra o turno nativamente, sem depender de outra geração do modelo. Cancelar interrompe
    a tarefa e encerra somente o Job Object criado por ela.
 5. Histórico → Abrir conversa permite retomar por um novo pedido humano.
    Reiniciar nunca reaplica operações nem reaproveita aprovações pendentes.
