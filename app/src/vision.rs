@@ -246,6 +246,16 @@ pub fn data_url(c: &Caminhos, path: &Path) -> Result<String, String> {
         B64.encode(fs::read(actual).map_err(|_| "Anexo indisponível.")?)
     ))
 }
+fn probe_confirmed(state: &str, text: &str) -> bool {
+    if state != "completed" {
+        return false;
+    }
+    let text = text.to_lowercase();
+    ["red", "blue", "square", "circle"]
+        .iter()
+        .all(|word| text.contains(word))
+}
+
 pub fn action(c: &Caminhos, name: &str, args: Value) -> Result<Value, String> {
     match name {
         "cleanup_ephemeral" => {
@@ -284,10 +294,7 @@ pub fn action(c: &Caminhos, name: &str, args: Value) -> Result<Value, String> {
                 json!({"role":"user","content":[{"type":"text","text":"Describe the colors and shapes in this image in English. Be brief."},{"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}",B64.encode(png.into_inner()))}}]}),
             ];
             let result = crate::backends::vision_probe(c, &messages)?;
-            let text = result.text.to_lowercase();
-            let confirmed = ["red", "blue", "square", "circle"]
-                .iter()
-                .all(|w| text.contains(w));
+            let confirmed = probe_confirmed(&result.metrics.state, &result.text);
             let report = json!({"confirmed":confirmed,"elapsed_ms":start.elapsed().as_secs_f64()*1000.0,"metrics":result.metrics,"model":crate::backends::selected_model(c)?,"endpoint":endpoint,"retention_days":cfg.retention_days,"test":"synthetic_shapes_v1","vram_impact":null});
             let root = private_root(c)?;
             fs::create_dir_all(&root).map_err(|_| "Pasta privada indisponível.")?;
@@ -342,6 +349,22 @@ pub fn action(c: &Caminhos, name: &str, args: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn incomplete_visual_probe_never_confirms_capability() {
+        let text = "A red square and a blue circle.";
+        assert!(probe_confirmed("completed", text));
+        for state in [
+            "length",
+            "cancelled",
+            "timeout",
+            "transport_error",
+            "protocol_error",
+            "no_final",
+        ] {
+            assert!(!probe_confirmed(state, text));
+        }
+        assert!(!probe_confirmed("completed", "A red square."));
+    }
     fn picture(format: ImageFormat) -> Vec<u8> {
         let mut out = Cursor::new(vec![]);
         image::DynamicImage::new_rgb8(20, 10)

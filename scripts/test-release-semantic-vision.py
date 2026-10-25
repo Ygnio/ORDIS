@@ -1,3 +1,4 @@
+from qa_cleanup import remove_fixture
 """Packaged end-to-end synthetic acceptance. No real profiles, images or models."""
 import base64,http.server,io,json,os,shutil,sqlite3,subprocess,tempfile,threading,zipfile,zlib,struct
 from pathlib import Path
@@ -23,7 +24,7 @@ def run(package):
             if req.get('max_tokens')==160:
                 assert req.get('temperature')==0 and req.get('chat_template_kwargs',{}).get('enable_thinking') is False
             requests.append(req);self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
-            self.wfile.write(('data: '+json.dumps({'choices':[{'delta':{'content':'A red square and a blue circle. Synthetic test.'}}]})+'\n\ndata: '+json.dumps({'choices':[],'usage':{'prompt_tokens':35,'completion_tokens':12,'total_tokens':47}})+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush();self.close_connection=True
+            self.wfile.write(('data: '+json.dumps({'choices':[{'delta':{'content':'A red square and a blue circle. Synthetic test.'},'finish_reason':'stop'}]})+'\n\ndata: '+json.dumps({'choices':[],'usage':{'prompt_tokens':35,'completion_tokens':12,'total_tokens':47}})+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush();self.close_connection=True
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Backend);threading.Thread(target=server.serve_forever,daemon=True).start()
     try:
         with zipfile.ZipFile(package) as archive:
@@ -67,7 +68,7 @@ def run(package):
     finally:
         server.shutdown();server.server_close()
         assert home.resolve().parent==base.resolve() and home.name.startswith('semantic-vision-synthetic-');assert stage.resolve().parent==Path(tempfile.gettempdir()).resolve() and stage.name.startswith('semantic-vision-package-')
-        shutil.rmtree(home);shutil.rmtree(stage)
+        remove_fixture(home);remove_fixture(stage)
 
 if __name__=='__main__':
     import argparse

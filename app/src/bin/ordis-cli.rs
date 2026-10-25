@@ -19,6 +19,12 @@ mod developer_runner;
 mod diagnostics;
 #[path = "../ferramentas.rs"]
 mod ferramentas;
+#[path = "../generation_policy.rs"]
+mod generation_policy;
+#[path = "../generation_protocol.rs"]
+mod generation_protocol;
+#[path = "../generation_stream.rs"]
+mod generation_stream;
 #[path = "../identity.rs"]
 mod identity;
 #[path = "../imagens.rs"]

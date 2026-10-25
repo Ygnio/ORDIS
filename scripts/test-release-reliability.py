@@ -1,3 +1,4 @@
+from qa_cleanup import remove_fixture
 """Synthetic Phase 3.2 release validation; never uses existing backends or conversations."""
 import argparse
 from contextlib import closing
@@ -65,7 +66,7 @@ def run(package, metrics=True):
                 self.wfile.write(('data: ' + json.dumps(chunk) + '\n\n').encode())
                 self.wfile.flush()
                 time.sleep(.16)
-            chunk = {'choices': [], 'usage': {'prompt_tokens': 900, 'completion_tokens': 17, 'total_tokens': 917},
+            chunk = {'choices': [{'delta': {}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 900, 'completion_tokens': 17, 'total_tokens': 917},
                      'timings': {'predicted_n': 17, 'predicted_ms': 320, 'predicted_per_second': 53.125}}
             self.wfile.write(('data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n').encode())
             self.wfile.flush()
@@ -227,7 +228,7 @@ def run(package, metrics=True):
         for path, allowed, prefix in [(fixture, base, 'validacao-sintetica-'), (staging, Path(tempfile.gettempdir()), 'ordis-release-synthetic-')]:
             resolved = path.resolve()
             assert resolved.parent == allowed.resolve() and resolved.name.startswith(prefix) and not path.is_symlink()
-            shutil.rmtree(path)
+            remove_fixture(path)
 
 
 if __name__ == '__main__':

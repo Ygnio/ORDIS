@@ -362,6 +362,7 @@ struct Resposta {
     raciocinio: String,
     chamadas: Vec<Chamada>,
     metricas: crate::response_metrics::GenerationMetrics,
+    ferramentas_validas: bool,
 }
 
 fn transmitir(
@@ -389,11 +390,13 @@ fn transmitir(
             saida.evento(tipo, dados);
         },
     )?;
+    let ferramentas_validas = r.tools_ready();
     Ok(Resposta {
         texto: r.text,
         raciocinio: r.reasoning,
         chamadas: r.tool_calls,
         metricas: r.metrics,
+        ferramentas_validas,
     })
 }
 
@@ -480,6 +483,16 @@ fn rodar(c: &Caminhos, s: Sessao, cancelar: &AtomicBool, saida: &dyn Saida) -> R
     let id = s.id.clone();
     crate::developer::begin(c, &id, &s.titulo);
     let result = rodar_interno(c, s, cancelar, saida);
+    let generation_state = abrir(c, &id)
+        .ok()
+        .and_then(|s| {
+            s.mensagens
+                .into_iter()
+                .rev()
+                .find(|m| m.papel == "assistant")
+        })
+        .and_then(|m| m.metricas)
+        .map(|m| m.state);
     crate::developer::finish(
         c,
         &id,
@@ -490,7 +503,14 @@ fn rodar(c: &Caminhos, s: Sessao, cancelar: &AtomicBool, saida: &dyn Saida) -> R
         } else if crate::developer::refused(&id) {
             "refused"
         } else {
-            "completed"
+            match generation_state.as_deref() {
+                Some(
+                    "length" | "no_final" | "transport_error" | "protocol_error" | "backend_error",
+                ) => "interrupted",
+                Some("timeout" | "first_token_timeout" | "idle_timeout") => "timeout",
+                Some("cancelled") => "cancelled",
+                _ => "completed",
+            }
         },
     );
     result
@@ -555,6 +575,7 @@ fn rodar_interno(
             json!({"ids":memoria_ids,"origins":memory.as_ref().map(|m|m["_lucille_sources"].clone()),"retrieval_ms":memory_elapsed}),
         );
         let r = transmitir(c, &mensagens, cancelar, saida)?;
+        let ferramentas_validas = r.ferramentas_validas;
         let chamadas = r.chamadas.clone();
         s.mensagens.push(Mensagem {
             papel: "assistant".into(),
@@ -570,19 +591,27 @@ fn rodar_interno(
         s.atualizada = agora();
         salvar(c, &s)?;
         if let Some(m) = s.mensagens.last() {
-            let _ = crate::memory::record(
-                c,
-                &s.id,
-                &s.titulo,
-                s.mensagens.len() - 1,
-                "assistant",
-                &m.texto,
-            );
+            if m.metricas
+                .as_ref()
+                .is_some_and(|metrics| metrics.state == "completed")
+            {
+                let _ = crate::memory::record(
+                    c,
+                    &s.id,
+                    &s.titulo,
+                    s.mensagens.len() - 1,
+                    "assistant",
+                    &m.texto,
+                );
+            }
         }
-        if chamadas.is_empty() || cancelar.load(Ordering::Relaxed) {
+        if !ferramentas_validas || chamadas.is_empty() || cancelar.load(Ordering::Relaxed) {
             return Ok(());
         }
         for ch in chamadas {
+            if cancelar.load(Ordering::Relaxed) {
+                return Ok(());
+            }
             saida.evento(
                 "ferramenta",
                 json!({"id": ch.id, "nome": ch.nome, "argumentos": ch.argumentos}),
@@ -761,6 +790,18 @@ mod metrics_tests {
             abrir(&c, &s.id).unwrap().mensagens[0].memoria_origens,
             Some(json!({"7":"vector"}))
         );
+        assert_eq!(
+            abrir(&c, &s.id).unwrap().mensagens[0].metricas,
+            Some(metrics.clone())
+        );
+        metrics.state = "length".into();
+        metrics.backend = Some("llama_cpp".into());
+        metrics.finish_reason = Some("length".into());
+        metrics.has_final_content = Some(true);
+        metrics.applied_max_tokens = Some(4096);
+        metrics.task_profile = Some("conversation".into());
+        s.mensagens[0].metricas = Some(metrics.clone());
+        salvar(&c, &s).unwrap();
         assert_eq!(
             abrir(&c, &s.id).unwrap().mensagens[0].metricas,
             Some(metrics.clone())

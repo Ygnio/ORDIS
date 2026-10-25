@@ -644,38 +644,41 @@ pub fn importar_fluxo(c: &Caminhos, nome: &str, conteudo: &str) -> Result<String
 
 fn conversar(c: &Caminhos, corpo: Value) -> Result<Value, String> {
     let (base, chave) = crate::backends::active_endpoint(c);
+    let seconds = if crate::backends::active_kind(c) == crate::backends::BackendKind::LlamaCpp {
+        crate::generation_policy::load(c)?
+            .select(false, corpo.get("tools").is_some())
+            .limits
+            .total_seconds
+            .min(300)
+    } else {
+        300
+    };
     let mut req = ureq::post(&format!(
         "{}/v1/chat/completions",
         base.trim_end_matches('/')
     ))
-    .timeout(std::time::Duration::from_secs(300));
+    .timeout(std::time::Duration::from_secs(seconds));
     if let Some(key) = chave.as_deref().filter(|k| !k.is_empty()) {
         req = req.set("Authorization", &format!("Bearer {key}"));
     }
-    req.send_json(corpo)
+    let response: Value = req
+        .send_json(corpo)
         .map_err(|e| match e {
-            ureq::Error::Status(code, r) => {
-                format!(
-                    "HTTP {code}: {}",
-                    r.into_string()
-                        .unwrap_or_default()
-                        .chars()
-                        .take(300)
-                        .collect::<String>()
-                )
+            ureq::Error::Status(code, _) => {
+                format!("HTTP {code}: diagnóstico recusado pelo backend; corpo omitido.")
             }
             e => e.to_string(),
         })?
         .into_json()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if response["choices"][0]["finish_reason"] == "length" {
+        return Err("O diagnóstico atingiu o limite de geração antes de concluir.".into());
+    }
+    Ok(response)
 }
 
-fn corpo_teste(c: &Caminhos, modelo: &str, mensagens: Value, limite_tabby: u32) -> Value {
-    let mut corpo = json!({"model": modelo, "messages": mensagens});
-    if crate::backends::active_kind(c) == crate::backends::BackendKind::Tabbyapi {
-        corpo["max_tokens"] = json!(limite_tabby);
-    }
-    corpo
+fn corpo_teste(_c: &Caminhos, modelo: &str, mensagens: Value, limite_diagnostico: u32) -> Value {
+    json!({"model": modelo, "messages": mensagens,"max_tokens":limite_diagnostico})
 }
 
 /// Carrega o modelo configurado (se preciso) e confere resposta simples,

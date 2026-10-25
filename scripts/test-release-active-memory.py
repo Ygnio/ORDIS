@@ -1,3 +1,4 @@
+from qa_cleanup import remove_fixture
 """Active memory acceptance with an isolated synthetic profile; prints aggregates only.
 --real contacts the already running localhost server without changing its configuration.
 """
@@ -35,7 +36,7 @@ def run(package,real=False):
                 args={'learn':{'content':text['learn'],'category':'projects'},'update':{'id':target[0],'content':text['update'],'category':'projects','reason':'Renomeação sintética'},'forget':{'id':target[0],'reason':'Pedido sintético explícito'},'recall':{'query':'Horizonte'}}[key]
                 delta={'tool_calls':[{'index':0,'id':'synthetic-active-call','type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}
             self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
-            self.wfile.write(('data: '+json.dumps({'choices':[{'delta':delta}]})+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush();self.close_connection=True
+            self.wfile.write(('data: '+json.dumps({'choices':[{'delta':delta,'finish_reason':'tool_calls' if 'tool_calls' in delta else 'stop'}]})+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush();self.close_connection=True
     try:
         with zipfile.ZipFile(package) as outer:
             blob=outer.read('ORDIS-Windows-Test.zip') if 'ORDIS-Windows-Test.zip' in outer.namelist() else Path(package).read_bytes()
@@ -87,6 +88,6 @@ def run(package,real=False):
         if server:server.shutdown();server.server_close()
         assert home.resolve().parent==base.resolve() and home.name.startswith('active-acceptance-synthetic-')
         assert stage.resolve().parent==Path(tempfile.gettempdir()).resolve() and stage.name.startswith('active-release-synthetic-')
-        shutil.rmtree(home);shutil.rmtree(stage)
+        remove_fixture(home);remove_fixture(stage)
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('package');p.add_argument('--real',action='store_true');args=p.parse_args();run(args.package,args.real)

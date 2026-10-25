@@ -7,6 +7,9 @@ mod developer;
 mod developer_runner;
 mod diagnostics;
 mod ferramentas;
+mod generation_policy;
+mod generation_protocol;
+mod generation_stream;
 mod identity;
 mod imagens;
 mod memory;
@@ -158,6 +161,27 @@ fn renomear_sessao(c: State<'_, Ctx>, id: String, titulo: String) -> Result<(), 
 async fn vision_action(c: State<'_, Ctx>, action: String, args: Value) -> Result<Value, String> {
     let c = c.inner().clone();
     em_segundo_plano(move || vision::action(&c.caminhos, &action, args)).await
+}
+
+#[tauri::command]
+async fn generation_config(
+    c: State<'_, Ctx>,
+    action: String,
+    value: Value,
+) -> Result<Value, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || match action.as_str() {
+        "load" => serde_json::to_value(generation_policy::load(&c.caminhos)?)
+            .map_err(|_| "Falha ao ler limites.".into()),
+        "save" => {
+            let config =
+                serde_json::from_value(value).map_err(|_| "Configuração de geração inválida.")?;
+            generation_policy::save(&c.caminhos, config)?;
+            Ok(json!({"saved":true}))
+        }
+        _ => Err("Ação de geração desconhecida.".into()),
+    })
+    .await
 }
 
 #[tauri::command]
@@ -503,6 +527,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             vision_action,
+            generation_config,
             painel,
             memory_action,
             memory_stop,

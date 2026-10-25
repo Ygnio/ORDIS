@@ -6,11 +6,10 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -174,20 +173,9 @@ fn parse_metrics(text: &str) -> BTreeMap<String, f64> {
     result
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub nome: String,
-    pub argumentos: String,
-}
-
-#[derive(Debug)]
-pub struct ChatResponse {
-    pub text: String,
-    pub reasoning: String,
-    pub tool_calls: Vec<ToolCall>,
-    pub metrics: crate::response_metrics::GenerationMetrics,
-}
+#[cfg(test)]
+use crate::generation_stream::SseDecoder;
+pub use crate::generation_stream::{ChatResponse, ToolCall};
 
 fn settings_path(c: &Caminhos) -> PathBuf {
     c.runtime.join("inference/backend.json")
@@ -265,6 +253,7 @@ fn client(timeout: Duration, endpoint: &str) -> Result<reqwest::Client, String> 
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
     let mut builder = reqwest::Client::builder()
+        .retry(reqwest::retry::never())
         .connect_timeout(Duration::from_secs(5))
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none());
@@ -596,7 +585,31 @@ pub fn chat(
     if !tools.is_empty() && active_capabilities(c).tools {
         body["tools"] = json!(tools);
     }
-    run_async(chat_async(base, key, body, cancel, emit))
+    let policy = if active_kind(c) == BackendKind::LlamaCpp {
+        let agent = messages
+            .iter()
+            .rev()
+            .take_while(|m| m["role"] != "user")
+            .any(|m| m["role"] == "tool")
+            || crate::developer::load(c).permissions.enabled;
+        crate::generation_policy::load(c)?.select(contains_images, agent)
+    } else {
+        crate::generation_policy::Policy {
+            profile: "tabby".into(),
+            limits: crate::generation_policy::Limits {
+                max_tokens: max_tokens.unwrap_or(4096),
+                total_seconds: 900,
+                first_token_seconds: 900,
+                idle_seconds: 900,
+            },
+            observe_repetition: false,
+        }
+    };
+    // Preserve caller limits (diagnostics and other specialized requests).
+    if body.get("max_tokens").is_none() {
+        body["max_tokens"] = json!(policy.limits.max_tokens);
+    }
+    run_async(chat_with_policy(base, key, body, cancel, emit, policy))
 }
 
 /// Deterministic synthetic diagnostic only. Does not change server or chat preferences.
@@ -609,12 +622,14 @@ pub fn vision_probe(c: &Caminhos, messages: &[Value]) -> Result<ChatResponse, St
     let mut body = request_body(&selected_model(c)?, messages, Some(160));
     body["temperature"] = json!(0);
     body["chat_template_kwargs"] = json!({"enable_thinking":false});
-    run_async(chat_async(
+    let policy = crate::generation_policy::load(c)?.select(true, false);
+    run_async(chat_with_policy(
         base,
         key,
         body,
         &AtomicBool::new(false),
         &|_, _| {},
+        policy,
     ))
 }
 
@@ -626,38 +641,7 @@ fn request_body(model: &str, messages: &[Value], max_tokens: Option<u32>) -> Val
     body
 }
 
-#[derive(Default)]
-struct SseDecoder {
-    pending: Vec<u8>,
-    data: Vec<String>,
-}
-
-impl SseDecoder {
-    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
-        self.pending.extend_from_slice(bytes);
-        let mut events = Vec::new();
-        while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
-            let mut line: Vec<u8> = self.pending.drain(..=pos).collect();
-            if line.last() == Some(&b'\n') {
-                line.pop();
-            }
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            let line = String::from_utf8_lossy(&line);
-            if line.is_empty() {
-                if !self.data.is_empty() {
-                    events.push(self.data.join("\n"));
-                    self.data.clear();
-                }
-            } else if let Some(v) = line.strip_prefix("data:") {
-                self.data.push(v.strip_prefix(' ').unwrap_or(v).to_string());
-            }
-        }
-        events
-    }
-}
-
+#[cfg(test)]
 async fn chat_async(
     base: String,
     key: Option<String>,
@@ -665,147 +649,23 @@ async fn chat_async(
     cancel: &AtomicBool,
     emit: &dyn Fn(&str, Value),
 ) -> Result<ChatResponse, String> {
-    let mut metrics = crate::response_metrics::Tracker::new(
-        body["model"].as_str().unwrap_or("Modelo desconhecido"),
-    );
-    if cancel.load(Ordering::Relaxed) {
-        let metrics = metrics.snapshot("cancelled");
-        emit("metricas", json!(metrics));
-        return Ok(ChatResponse {
-            text: String::new(),
-            reasoning: String::new(),
-            tool_calls: vec![],
-            metrics,
-        });
-    }
-    let c = client(Duration::from_secs(900), &base)?;
-    let mut req = c
-        .post(format!("{}/v1/chat/completions", base.trim_end_matches('/')).as_str())
-        .json(&body);
-    if let Some(k) = key.as_deref().filter(|k| !k.is_empty()) {
-        req = req.bearer_auth(k);
-    }
-    let pending = req.send();
-    tokio::pin!(pending);
-    let mut waiting = tokio::time::interval(Duration::from_millis(40));
-    let mut waiting_update = std::time::Instant::now();
-    let response = loop {
-        tokio::select! {
-            biased;
-            _=waiting.tick()=>{
-                if cancel.load(Ordering::Relaxed) {let metrics=metrics.snapshot("cancelled");emit("metricas",json!(metrics));return Ok(ChatResponse{text:String::new(),reasoning:String::new(),tool_calls:vec![],metrics});}
-                if waiting_update.elapsed()>=Duration::from_millis(250){emit("metricas",json!(metrics.snapshot("streaming")));waiting_update=std::time::Instant::now();}
-            },
-            response=&mut pending=>break response.map_err(|e|{emit("metricas",json!(metrics.snapshot("interrupted")));format!("Falha ao falar com o backend: {e}")})?,
-        }
-    };
-    let status = response.status();
-    if !status.is_success() {
-        emit("metricas", json!(metrics.snapshot("interrupted")));
-        return Err(format!(
-            "Backend recusou o pedido (HTTP {}). Verifique compatibilidade, contexto e diagnóstico local; o corpo da resposta foi omitido para proteger anexos e conteúdo privado.",
-            status.as_u16()
-        ));
-    }
-    let mut stream = response.bytes_stream();
-    let mut decoder = SseDecoder::default();
-    let mut result = ChatResponse {
-        text: String::new(),
-        reasoning: String::new(),
-        tool_calls: vec![],
-        metrics: crate::response_metrics::GenerationMetrics::default(),
-    };
-    let mut ticks = tokio::time::interval(Duration::from_millis(40));
-    ticks.tick().await;
-    let mut finished = false;
-    let mut last_metrics = std::time::Instant::now();
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let next = tokio::select! {
-            biased;
-            _ = ticks.tick() => {
-                if cancel.load(Ordering::Relaxed) { break; }
-                if last_metrics.elapsed()>=Duration::from_millis(250) {emit("metricas",json!(metrics.snapshot("streaming")));last_metrics=std::time::Instant::now();}
-                continue;
-            },
-            item = stream.next() => Some(item),
-        };
-        let Some(item) = next else { break };
-        let Some(chunk) = item else { break };
-        let chunk = chunk.map_err(|e| {
-            emit("metricas", json!(metrics.snapshot("interrupted")));
-            format!("Stream do backend interrompido: {e}")
-        })?;
-        for event in decoder.push(&chunk) {
-            if event == "[DONE]" {
-                finished = true;
-                break;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(&event) else {
-                continue;
-            };
-            metrics.observe(&v);
-            let delta = &v["choices"][0]["delta"];
-            if let Some(s) = delta["reasoning_content"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-            {
-                result.reasoning.push_str(s);
-                emit("raciocinio", json!({"texto": s}));
-            }
-            if let Some(s) = delta["content"].as_str().filter(|s| !s.is_empty()) {
-                result.text.push_str(s);
-                emit("texto", json!({"texto": s}));
-            }
-            for call in delta["tool_calls"].as_array().into_iter().flatten() {
-                let index = call["index"]
-                    .as_u64()
-                    .unwrap_or(result.tool_calls.len() as u64) as usize;
-                while result.tool_calls.len() <= index {
-                    result.tool_calls.push(ToolCall {
-                        id: String::new(),
-                        nome: String::new(),
-                        argumentos: String::new(),
-                    });
-                }
-                let target = &mut result.tool_calls[index];
-                if let Some(id) = call["id"].as_str() {
-                    target.id = id.into();
-                }
-                if let Some(name) = call["function"]["name"].as_str() {
-                    target.nome.push_str(name);
-                }
-                if let Some(args) = call["function"]["arguments"].as_str() {
-                    target.argumentos.push_str(args);
-                }
-            }
-        }
-        if finished {
-            break;
-        }
-    }
-    result.metrics = metrics.snapshot(if finished {
-        "completed"
-    } else if cancel.load(Ordering::Relaxed) {
-        "cancelled"
-    } else {
-        "interrupted"
-    });
-    emit("metricas", json!(result.metrics));
-    if !finished && !cancel.load(Ordering::Relaxed) {
-        return Err("Stream do backend terminou sem o evento final [DONE].".into());
-    }
-    for (i, t) in result.tool_calls.iter_mut().enumerate() {
-        if t.id.is_empty() {
-            t.id = format!("call_{i}");
-        }
-        if t.argumentos.is_empty() {
-            t.argumentos = "{}".into();
-        }
-    }
-    Ok(result)
+    let policy = crate::generation_policy::Config::default().select(false, false);
+    chat_with_policy(base, key, body, cancel, emit, policy).await
+}
+
+async fn chat_with_policy(
+    base: String,
+    key: Option<String>,
+    body: Value,
+    cancel: &AtomicBool,
+    emit: &dyn Fn(&str, Value),
+    policy: crate::generation_policy::Policy,
+) -> Result<ChatResponse, String> {
+    let client = client(
+        Duration::from_secs(policy.limits.total_seconds.saturating_add(5)),
+        &base,
+    )?;
+    crate::generation_stream::request(client, base, key, body, cancel, emit, policy).await
 }
 
 #[cfg(test)]
@@ -813,6 +673,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::SystemTime;
 
@@ -1131,6 +992,7 @@ mod tests {
                 r#"data: {"choices":[{"delta":{"content":"<think>texto comum</think> hello"}}]}"#,
                 r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read","arguments":"{\"path\":"}}]}}]}"#,
                 r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"README.md\"}"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
                 r#"data: {"choices":[],"usage":{"prompt_tokens":900,"completion_tokens":118},"timings":{"predicted_n":118,"predicted_ms":2200,"predicted_per_second":53.63}}"#,
                 "data: [DONE]",
             ];
@@ -1166,7 +1028,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|s| s.as_str() != "metricas")
+                .filter(|s| !["metricas", "geracao_fim"].contains(&s.as_str()))
                 .cloned()
                 .collect::<Vec<_>>(),
             vec!["raciocinio", "texto"]
@@ -1234,7 +1096,9 @@ mod tests {
             &cancel,
             &|_, _| {},
         ));
-        assert!(incomplete.unwrap_err().contains("[DONE]"));
+        let incomplete = incomplete.unwrap();
+        assert_eq!(incomplete.metrics.state, "transport_error");
+        assert_eq!(incomplete.text, "partial");
         let err = run_async(get_json(
             &format!("http://{address}/v1/models"),
             None,

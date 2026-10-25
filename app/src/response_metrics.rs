@@ -4,8 +4,10 @@ use serde_json::Value;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct GenerationMetrics {
     pub model: String,
+    pub backend: Option<String>,
     pub completion_tokens: Option<u64>,
     pub estimated_tokens: Option<u64>,
     pub token_source: String,
@@ -16,6 +18,13 @@ pub struct GenerationMetrics {
     pub tokens_per_second: Option<f64>,
     pub rate_source: String,
     pub state: String,
+    pub finish_reason: Option<String>,
+    pub task_profile: Option<String>,
+    pub applied_max_tokens: Option<u32>,
+    pub deadline_seconds: Option<u64>,
+    pub has_final_content: Option<bool>,
+    pub repetition_warning: bool,
+    pub repeated_blocks: u32,
 }
 
 pub struct Tracker {
@@ -141,6 +150,7 @@ impl Tracker {
             tokens_per_second: rate,
             rate_source: rate_source.into(),
             state: state.into(),
+            ..Default::default()
         }
     }
 }

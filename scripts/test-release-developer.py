@@ -1,3 +1,4 @@
+from qa_cleanup import remove_fixture
 """Synthetic developer acceptance. --real uses only an existing localhost llama server.
 No conversations, profiles, source outputs or backend responses are published.
 The harness acts as the trusted human test controller for known synthetic operations.
@@ -77,7 +78,7 @@ def run(package, real=False):
             assert 'workspace_patch' in names and 'developer_decide' not in names
             delta={'content':text} if not name else {'tool_calls':[{'index':0,'id':f'synthetic-{n}','type':'function','function':{'name':name,'arguments':args if isinstance(args,str) else json.dumps(args)}}]}
             self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
-            self.wfile.write(('data: '+json.dumps({'choices':[{'delta':delta}]})+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush();self.close_connection=True
+            self.wfile.write(('data: '+json.dumps({'choices':[{'delta':delta,'finish_reason':'tool_calls' if name else 'stop'}]})+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush();self.close_connection=True
 
     try:
         archive=zipfile.ZipFile(package)
@@ -150,9 +151,16 @@ def run(package, real=False):
         assert not list(workspace.glob('refused*.txt'))
         assert len(approvals)==1,'Refusal must block further mutations this turn'
         if not real:
+            before_malformed=len(requests)
             code,_=ask('Synthetic developer malformed',False);assert code==0
-            cfg['max_calls']=5;action('save',cfg);code,_=ask('Synthetic developer loop',False);assert code!=0
-            assert len(requests)==17
+            assert len(requests)-before_malformed==1,'Malformed batch must stop without automatic continuation'
+            sessions=list((home/'runtime/agente/sessoes').glob('*.json'))
+            last=json.loads(max(sessions,key=lambda p:p.stat().st_mtime_ns).read_text(encoding='utf-8-sig'))
+            assert not any(m['papel']=='tool' for m in last['mensagens'])
+            assert last['mensagens'][-1]['metricas']['state']=='protocol_error'
+            cfg['max_calls']=5;action('save',cfg);before_loop=len(requests)
+            code,_=ask('Synthetic developer loop',False);assert code!=0
+            assert len(requests)-before_loop==5,'Agent call budget must still bound valid repeated calls'
         history=action('history');assert history['tasks'] and history['operations']
         with closing(sqlite3.connect(home/'runtime/memory/lucille.sqlite3')) as db:
             evidence=db.execute('select outcome,content from memory_evidence').fetchall()
@@ -166,7 +174,7 @@ def run(package, real=False):
         # Exact directories created above, never an existing user installation or project.
         assert home.parent.resolve()==base.resolve() and home.name.startswith('developer-acceptance-synthetic-')
         assert workspace.name.startswith('developer-project-synthetic-') and stage.name.startswith('developer-release-synthetic-')
-        shutil.rmtree(home);shutil.rmtree(workspace);shutil.rmtree(stage)
+        remove_fixture(home);remove_fixture(workspace);remove_fixture(stage)
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('package');parser.add_argument('--real',action='store_true');args=parser.parse_args();run(args.package,args.real)
