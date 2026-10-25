@@ -714,6 +714,12 @@ struct Waiting {
 }
 static WAITING: Mutex<Option<(String, Waiting)>> = Mutex::new(None);
 static REFUSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+pub fn refused(task: &str) -> bool {
+    REFUSED
+        .lock()
+        .map(|items| items.iter().any(|v| v == task))
+        .unwrap_or(true)
+}
 static OWN_PROCESSES: Mutex<Vec<(String, u32, f64)>> = Mutex::new(Vec::new());
 
 pub struct CallBudget {

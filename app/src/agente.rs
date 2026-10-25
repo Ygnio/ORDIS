@@ -485,6 +485,8 @@ fn rodar(c: &Caminhos, s: Sessao, cancelar: &AtomicBool, saida: &dyn Saida) -> R
             "cancelled"
         } else if result.is_err() {
             "failed"
+        } else if crate::developer::refused(&id) {
+            "refused"
         } else {
             "completed"
         },
@@ -643,6 +645,10 @@ fn rodar_interno(
                 ..Default::default()
             });
             salvar(c, &s)?;
+            if crate::developer::refused(&s.id) {
+                saida.evento("status",json!({"texto":"Operação recusada. Turno encerrado sem novas ferramentas; envie um novo pedido para continuar."}));
+                return Ok(());
+            }
             if ultima_foi_imagem(&s) {
                 // A geração de imagens descarrega o Qwen e o restaura ao terminar.
                 garantir_inferencia(c, saida)?;

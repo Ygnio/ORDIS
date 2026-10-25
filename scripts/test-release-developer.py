@@ -145,7 +145,7 @@ def run(package, real=False):
         if not real:
             code,_=ask('Synthetic developer malformed',False);assert code==0
             cfg['max_calls']=5;action('save',cfg);code,_=ask('Synthetic developer loop',False);assert code!=0
-            assert len(requests)==17
+            assert len(requests)==15
         history=action('history');assert history['tasks'] and history['operations']
         print(json.dumps({'mode':'real-localhost' if real else 'synthetic-backend','approved_operations':approved_count,'refusal_unchanged':True,'history_persisted':True,'execution':'blocked-elevated' if elevated() else 'passed','requests':len(requests),'private_output_exported':False}))
     finally:

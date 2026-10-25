@@ -99,6 +99,7 @@ fn refusal_changes_nothing_and_blocks_retry_this_turn() {
     )
     .unwrap();
     assert_eq!(v["state"], "refused");
+    assert!(refused(&task));
     assert!(!f.root.join("a.py").exists());
     assert!(execute_with(
         &f.c,
