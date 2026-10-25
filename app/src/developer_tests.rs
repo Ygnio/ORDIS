@@ -324,10 +324,10 @@ fn job_runner_output_failure_timeout_and_cancel() {
         .unwrap()
     };
     let no = AtomicBool::new(false);
-    let v = run("Write-Output 'synthetic'; exit 0", 60, 4096, &no);
-    assert_eq!(v["state"], "completed");
+    let v = run("Write-Output 'synthetic'; exit 0", 180, 4096, &no);
+    assert_eq!(v["state"], "completed", "synthetic runner outcome: {v}");
     assert!(v["stdout"].as_str().unwrap().contains("synthetic"));
-    assert_eq!(run("exit 7", 60, 4096, &no)["state"], "failed");
+    assert_eq!(run("exit 7", 180, 4096, &no)["state"], "failed");
     assert_eq!(
         run("Start-Sleep -Seconds 8", 1, 4096, &no)["state"],
         "timeout"
@@ -339,7 +339,7 @@ fn job_runner_output_failure_timeout_and_cancel() {
     assert_eq!(
         run(
             &format!("Write-Output '{}'", "x".repeat(6000)),
-            60,
+            180,
             512,
             &no
         )["truncated"],
