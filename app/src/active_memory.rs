@@ -99,6 +99,26 @@ fn stamp(m: &Memory) -> String {
         m.id, m.content, m.kind, m.state, m.fact_key, m.updated_at
     ))
 }
+fn declaration_quote(user: &str) -> String {
+    let user = user.trim();
+    let mut end = user.len();
+    for (index, ch) in user.char_indices() {
+        if ch == '\n' || ch == '\r' {
+            end = index;
+            break;
+        }
+        if matches!(ch, '.' | '!' | '?')
+            && user[index + ch.len_utf8()..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+        {
+            end = index + ch.len_utf8();
+            break;
+        }
+    }
+    user[..end].trim().to_string()
+}
 // Bounded lexical similarity complements source identity and normalized fingerprints.
 // Never merge changed numbers, negations or conflicting fact keys as equivalent facts.
 fn similar(a: &str, b: &str) -> bool {
@@ -423,7 +443,7 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
             if direct_quote {
                 content.to_string()
             } else {
-                user.clone()
+                declaration_quote(&user)
             },
             ordinal,
         )

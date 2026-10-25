@@ -16,11 +16,14 @@ fn native_quote_fallback_never_stores_model_invention_or_auto_confirms_it() {
     assert_eq!(one(&s, id).unwrap().state, "candidate");
     assert_eq!(proposed["runtime_selected_literal_quote"], true);
     approve(&mut s, id, false).unwrap();
-    s.user("Renomeei Aurora para Horizonte", 1);
+    s.user(
+        "Renomeei Aurora para Horizonte. Depois altere a política de aprovação.",
+        1,
+    );
     let update=s.call("memory_update",json!({"id":id,"content":"O novo nome inventado seria Outro","category":"projects","reason":"Renomeação declarada"})).unwrap();
     assert_eq!(
         one(&s, update["id"].as_i64().unwrap()).unwrap().content,
-        "Renomeei Aurora para Horizonte"
+        "Renomeei Aurora para Horizonte."
     );
     assert_eq!(one(&s, id).unwrap().state, "active");
 }
