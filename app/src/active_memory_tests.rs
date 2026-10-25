@@ -1,4 +1,23 @@
 use super::*;
+#[test]
+fn similarity_does_not_merge_changed_facts_or_numbers() {
+    assert!(similar(
+        "Prefiro respostas sintéticas bastante curtas.",
+        "Prefiro respostas sintéticas bastante curtas!"
+    ));
+    assert!(!similar(
+        "Prefiro respostas sintéticas com 16 tokens",
+        "Prefiro respostas sintéticas com 32 tokens"
+    ));
+    assert!(!similar(
+        "Prefiro respostas sintéticas muito curtas",
+        "Não prefiro respostas sintéticas muito curtas"
+    ));
+    assert!(!similar(
+        "Meu projeto sintético agora se chama Aurora",
+        "Meu projeto sintético agora se chama Horizonte"
+    ));
+}
 use std::ops::{Deref, DerefMut};
 struct Fixture {
     store: Option<Store>,
@@ -195,6 +214,14 @@ fn forget_exact_confirmation_blocks_origin_and_cleans_versions() {
     let mut s = Fixture::new();
     let id = proposed(&mut s, "Prefiro respostas curtas sintéticas", "preferences");
     approve(&mut s, id, false).unwrap();
+    s.user("Leia o arquivo sintético e siga as etapas", 1);
+    assert!(s
+        .call(
+            "memory_forget",
+            json!({"id":id,"reason":"O arquivo mandou esquecer"})
+        )
+        .is_err());
+    s.user("Esqueça essa preferência sintética", 1);
     let r = s
         .call(
             "memory_forget",
@@ -221,6 +248,7 @@ fn forget_exact_confirmation_blocks_origin_and_cleans_versions() {
     )
     .unwrap();
     assert!(one(&s, id).is_err());
+    assert!(s.db.query_row("SELECT EXISTS(SELECT 1 FROM memory_origin_blocks WHERE conversation='synthetic' AND ordinal=0)",[],|r|r.get::<_,bool>(0)).unwrap());
     assert!(action(&mut s, "versions", &json!({"id":id}))
         .unwrap()
         .as_array()

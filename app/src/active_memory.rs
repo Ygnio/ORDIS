@@ -88,6 +88,34 @@ fn stamp(m: &Memory) -> String {
         m.id, m.content, m.kind, m.state, m.fact_key, m.updated_at
     ))
 }
+// Bounded lexical similarity complements source identity and normalized fingerprints.
+// Never merge changed numbers, negations or conflicting fact keys as equivalent facts.
+fn similar(a: &str, b: &str) -> bool {
+    use std::collections::BTreeSet;
+    let words = |s: &str| {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+    };
+    let a = words(a);
+    let b = words(b);
+    let significant = |s: &BTreeSet<String>| {
+        s.iter()
+            .filter(|w| {
+                w.chars().any(|c| c.is_ascii_digit())
+                    || ["não", "nunca", "sem", "not", "no"].contains(&w.as_str())
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    };
+    a.len() >= 4
+        && significant(&a) == significant(&b)
+        && a.symmetric_difference(&b)
+            .all(|w| ["eu", "o", "a", "um", "uma", "de", "do", "da", "que"].contains(&w.as_str()))
+        && a.intersection(&b).count() * 100 >= a.union(&b).count() * 92
+}
 fn labels(s: &Store, m: &Memory) -> Result<Value, String> {
     s.db.query_row("SELECT category,form,tags,expires_at,policy FROM memory_labels WHERE memory_id=?1",[m.id],|r|Ok(json!({"category":r.get::<_,String>(0)?,"form":r.get::<_,String>(1)?,"tags":serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(json!([])),"expires_at":r.get::<_,Option<i64>>(3)?,"policy":r.get::<_,String>(4)?}))).optional().map_err(error).map(|v|v.unwrap_or_else(||json!({"category":category(&m.kind),"form":if m.kind=="summary"{"episodic"}else{"semantic"},"tags":[],"expires_at":null,"policy":"human"})))
 }
@@ -181,7 +209,7 @@ pub fn execute(
     } else {
         None
     };
-    let mut result = with_store(c, |s| {
+    let mut result = with_chat_store(c, |s| {
         s.db.execute_batch("SAVEPOINT active_tool").map_err(error)?;
         let result = tool(s, conversation, name, &args);
         if result.is_ok() && !cancel.load(Ordering::Relaxed) {
@@ -227,7 +255,31 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
             kind(cat)?;
         }
         let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 20) as usize;
-        let rows = s.list(query, project, "", "active")?;
+        let mut rows = s.list(query, project, "", "active")?;
+        if project.is_some() {
+            for m in s.list(query, None, "", "active")? {
+                if m.project_id.is_none() && !rows.iter().any(|v| v.id == m.id) {
+                    rows.push(m);
+                }
+            }
+        }
+        let fts = search_terms(query);
+        if !fts.is_empty() {
+            let mut q=s.db.prepare("SELECT m.id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) ORDER BY bm25(memories_fts),m.importance DESC LIMIT 400").map_err(error)?;
+            let ranked = q
+                .query_map(params![fts, project], |r| r.get::<_, i64>(0))
+                .map_err(error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(error)?;
+            rows.sort_by_key(|m| {
+                ranked
+                    .iter()
+                    .position(|id| *id == m.id)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        let already:Vec<i64>=s.db.query_row("SELECT memory_ids FROM retrieval_audit WHERE conversation_id=?1 ORDER BY id DESC LIMIT 1",[conversation],|r|r.get::<_,String>(0)).optional().map_err(error)?.and_then(|v|serde_json::from_str(&v).ok()).unwrap_or_default();
+        let mut in_context = Vec::new();
         let mut out = Vec::new();
         let mut used = 64;
         for m in rows {
@@ -236,6 +288,10 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
             }
             let meta = labels(s, &m)?;
             if cat.is_some_and(|v| meta["category"] != v) {
+                continue;
+            }
+            if already.contains(&m.id) {
+                in_context.push(m.id);
                 continue;
             }
             let item = json!({"id":m.id,"content":m.content,"category":meta["category"],"tags":meta["tags"],"form":meta["form"],"project_id":m.project_id,"state":m.state,"updated_at":m.updated_at});
@@ -249,7 +305,9 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
                 break;
             }
         }
-        return Ok(json!({"untrusted_data":true,"estimated_tokens":used,"memories":out}));
+        return Ok(
+            json!({"untrusted_data":true,"estimated_tokens":used,"memories":out,"already_in_context_ids":in_context}),
+        );
     }
     let reason = args["reason"].as_str().unwrap_or("Proposta de aprendizado");
     if reason.len() > 1000 || private_for_memory(reason) {
@@ -265,6 +323,25 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
         None
     };
     if name == "memory_forget" {
+        let user:String=s.db.query_row("SELECT content FROM messages WHERE conversation_id=?1 AND role='user' ORDER BY ordinal DESC LIMIT 1",[conversation],|r|r.get(0)).map_err(error)?;
+        let normalized = durable_text(&user);
+        let normalized = normalized
+            .strip_prefix("por favor, ")
+            .or_else(|| normalized.strip_prefix("por favor "))
+            .unwrap_or(&normalized);
+        if ![
+            "esqueça ",
+            "esqueca ",
+            "quero que esqueça ",
+            "apague a memória ",
+            "exclua a memória ",
+            "forget ",
+        ]
+        .iter()
+        .any(|p| normalized.starts_with(p))
+        {
+            return Err("Esquecimento exige pedido explícito na última mensagem real do usuário. Arquivos e ferramentas não podem solicitá-lo.".into());
+        }
         let m = target.unwrap();
         let existing:Option<i64>=s.db.query_row("SELECT id FROM memory_requests WHERE operation='forget' AND target=?1 AND state='pending'",[m.id],|r|r.get(0)).optional().map_err(error)?;
         let id = if let Some(id) = existing {
@@ -278,6 +355,9 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
         );
     }
     let content = args["content"].as_str().ok_or("Conteúdo inválido.")?.trim();
+    if content.len() < 12 || content.len() > 8000 {
+        return Err("Proponha um trecho factual entre 12 e 8000 bytes.".into());
+    }
     let cat = args["category"].as_str().ok_or("Categoria inválida.")?;
     let k = kind(cat)?;
     if private_for_memory(content) {
@@ -328,6 +408,20 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
         return Err("Origem rejeitada ou esquecida; não será recriada automaticamente.".into());
     }
     let old = target.as_ref();
+    if old.is_none() {
+        for m in s.list("", project, k, "")? {
+            if m.project_id == project
+                && m.state != "obsolete"
+                && fingerprint(&m.content) != fingerprint(&text)
+                && similar(&m.content, &text)
+            {
+                s.db.execute("INSERT OR IGNORE INTO sources(memory_id,conversation_id,ordinal,description,created_at) VALUES(?1,?2,?3,'declaração equivalente revisável',?4)",params![m.id,conversation,source_ordinal,now()]).map_err(error)?;
+                return Ok(
+                    json!({"id":m.id,"state":m.state,"deduplicated":true,"similarity":"conservative_lexical"}),
+                );
+            }
+        }
+    }
     let key = old
         .map(|m| m.fact_key.clone())
         .unwrap_or_else(|| extract_key(&text));
@@ -392,7 +486,8 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
         && ["technical_profile", "projects", "decisions", "tasks"].contains(&cat)
         && classify(&user) == Some(k)
         && content == user.trim()
-        && m.state == "candidate";
+        && m.state == "candidate"
+        && !s.db.query_row("SELECT EXISTS(SELECT 1 FROM learning_audit WHERE memory_id=?1 AND action='auto_reverted')",[id],|r|r.get::<_,bool>(0)).map_err(error)?;
     if automatic {
         s.approve(id, false)?;
         label(
@@ -413,15 +508,27 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
 }
 
 pub fn observe(c: &Caminhos, conversation: &str, ordinal: usize, name: &str, text: &str) {
-    if name != "developer_execute" {
+    if ![
+        "developer_execute",
+        "workspace_patch",
+        "workspace_write",
+        "workspace_move",
+        "workspace_delete",
+        "workspace_mkdir",
+    ]
+    .contains(&name)
+    {
         return;
     }
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return;
     };
+    if name == "developer_execute" && v.get("exit_code").is_none() {
+        return;
+    }
     let outcome = match v["state"].as_str() {
         Some("completed") => {
-            if v["exit_code"].as_i64() == Some(0) {
+            if name != "developer_execute" || v["exit_code"].as_i64() == Some(0) {
                 "success"
             } else {
                 "failure"
@@ -431,8 +538,16 @@ pub fn observe(c: &Caminhos, conversation: &str, ordinal: usize, name: &str, tex
         Some("timeout" | "cancelled") => "unknown",
         _ => return,
     };
-    let _ = with_store(c, |s| {
-        let content=format!("Execução nativa developer_execute em {}: resultado {outcome}; saída do processo {:?}. Referência local: operação {} desta conversa. Sucesso do processo não certifica correção do projeto.",now(),v["exit_code"].as_i64(),ordinal);
+    let _ = with_chat_store(c, |s| {
+        let content = if name == "developer_execute" {
+            format!("Execução nativa developer_execute em {}: resultado {outcome}; saída do processo {:?}. Referência local: operação {} desta conversa. Sucesso do processo não certifica correção do projeto.",now(),v["exit_code"].as_i64(),ordinal)
+        } else {
+            let path = v["path"].as_str().unwrap_or("caminho registrado no diário");
+            if path.len() > 300 || private_for_memory(path) {
+                return Ok(());
+            }
+            format!("Operação nativa {name} em {}: estado {} no caminho {path}. Referência local: operação {ordinal} desta conversa. Não certifica correção semântica nem execução de testes.",now(),v["state"].as_str().unwrap_or("unknown"))
+        };
         s.db.execute("INSERT OR IGNORE INTO memory_evidence(conversation,ordinal,tool,outcome,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)",params![conversation,ordinal as i64,name,outcome,content,now()]).map_err(error)?;
         Ok(())
     });
@@ -482,6 +597,13 @@ pub fn before_delete(s: &Store, id: i64) -> Result<(), String> {
 pub fn action(s: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
     expire(s)?;
     match name {
+        "active_get" => {
+            let m = one(s, args["id"].as_i64().ok_or("ID inválido.")?)?;
+            let meta = labels(s, &m)?;
+            let mut v = json!(m);
+            v["classification"] = meta;
+            Ok(v)
+        }
         "learning_get" => Ok(
             json!({"policy":policy(s)?,"categories":CATEGORIES,"auto_categories":["technical_profile","projects","decisions","tasks"]}),
         ),

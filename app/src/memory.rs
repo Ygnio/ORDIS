@@ -428,7 +428,7 @@ impl Store {
                 }
             }
         }
-        if source.is_some() && tx.query_row("SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND kind=?2 AND project_id IS ?3)",params![fp,m.kind,m.project_id],|r|r.get::<_,bool>(0)).map_err(error)? {return Ok(0);}
+        if source.is_some() && tx.query_row("SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND project_id IS ?2)",params![fp,m.project_id],|r|r.get::<_,bool>(0)).map_err(error)? {return Ok(0);}
 
         let duplicate:Option<i64>=tx.query_row("SELECT id FROM memories WHERE fingerprint=?1 AND kind=?2 AND project_id IS ?3 AND (?4 IS NULL OR id<>?4) LIMIT 1",params![fp,m.kind,m.project_id,id],|r|r.get(0)).optional().map_err(error)?;
         if id.is_some() && duplicate.is_some() {
@@ -1772,10 +1772,9 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
         return run_consolidation(c, false);
     }
     with_store(c, |s| match action {
-        "learning_get" | "learning_save" | "active_list" | "reclassify" | "versions"
-        | "requests" | "forget_confirm" | "request_reject" | "reject" | "undo_auto" => {
-            active::action(s, action, &args)
-        }
+        "learning_get" | "learning_save" | "active_get" | "active_list" | "reclassify"
+        | "versions" | "requests" | "forget_confirm" | "request_reject" | "reject"
+        | "undo_auto" => active::action(s, action, &args),
         "identity_get" => Ok(
             json!({"profile":s.profile()?.unwrap_or_else(||legacy_profile(c)),"saved":s.profile()?.is_some(),"legacy_present":legacy_present(c)}),
         ),
