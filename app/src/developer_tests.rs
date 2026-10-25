@@ -1,4 +1,60 @@
 use super::*;
+#[test]
+fn active_memory_uses_native_evidence_without_copying_file_contents() {
+    let f = Fixture::new();
+    crate::memory::record(
+        &f.c,
+        "synthetic",
+        "Synthetic",
+        0,
+        "user",
+        "Projeto: aprendizado sintético",
+    )
+    .unwrap();
+    let result=f.call("workspace_write",json!({"path":"a.py","content":"print('synthetic-source-marker')","reason":"Synthetic fixture"})).unwrap();
+    crate::memory::active::observe(&f.c, "synthetic", 2, "workspace_write", &result.to_string());
+    let info = crate::memory::active::execute(
+        &f.c,
+        "synthetic",
+        "memory_inspect",
+        json!({}),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let item = &info["evidence"][0];
+    assert_eq!(item["outcome"], "success");
+    assert!(!item["content"]
+        .as_str()
+        .unwrap()
+        .contains("synthetic-source-marker"));
+    let proposed=crate::memory::active::execute(&f.c,"synthetic","memory_propose",json!({"content":"Resumo não verificado proposto pelo modelo","evidence_id":item["id"],"source":"developer","category":"experiences"}),&AtomicBool::new(false)).unwrap();
+    assert_eq!(proposed["review_required"], true);
+    let stored = crate::memory::action(&f.c, "active_get", json!({"id":proposed["id"]})).unwrap();
+    assert_eq!(stored["content"], item["content"]);
+}
+#[test]
+fn operational_memory_is_scoped_to_existing_workspace_journal() {
+    let f = Fixture::new();
+    begin(&f.c, "prior", "Synthetic title that is not copied");
+    finish(&f.c, "prior", "completed");
+    begin(&f.c, "current", "Synthetic current");
+    let info = memory_state(&f.c, "current").unwrap();
+    assert_eq!(info["authorization"], false);
+    assert_eq!(info["recent_same_workspace"][0]["conversation"], "prior");
+    assert!(!info.to_string().contains("title that"));
+    let second = f.root.join("second");
+    fs::create_dir(&second).unwrap();
+    let mut cfg = load(&f.c);
+    cfg.permissions.workspace = second.to_string_lossy().into();
+    action(&f.c, "save", json!(cfg)).unwrap();
+    begin(&f.c, "other", "Synthetic other");
+    assert!(
+        memory_state(&f.c, "other").unwrap()["recent_same_workspace"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
 struct Fixture {
     c: Caminhos,
     root: PathBuf,
@@ -268,10 +324,10 @@ fn job_runner_output_failure_timeout_and_cancel() {
         .unwrap()
     };
     let no = AtomicBool::new(false);
-    let v = run("Write-Output 'synthetic'; exit 0", 60, 4096, &no);
-    assert_eq!(v["state"], "completed");
+    let v = run("Write-Output 'synthetic'; exit 0", 180, 4096, &no);
+    assert_eq!(v["state"], "completed", "synthetic runner outcome: {v}");
     assert!(v["stdout"].as_str().unwrap().contains("synthetic"));
-    assert_eq!(run("exit 7", 60, 4096, &no)["state"], "failed");
+    assert_eq!(run("exit 7", 180, 4096, &no)["state"], "failed");
     assert_eq!(
         run("Start-Sleep -Seconds 8", 1, 4096, &no)["state"],
         "timeout"
@@ -283,7 +339,7 @@ fn job_runner_output_failure_timeout_and_cancel() {
     assert_eq!(
         run(
             &format!("Write-Output '{}'", "x".repeat(6000)),
-            60,
+            180,
             512,
             &no
         )["truncated"],

@@ -560,6 +560,9 @@
       case 'memorias':
         usedMemories(d.ids,d.retrieval_ms);
         break;
+      case 'memory_change':
+        if (d.review_required || d.state === 'awaiting_human_confirmation') estado('Memória aguardando revisão na página Memória.');
+        break;
       case 'metricas':
         if (!segmento) break;
         if (!segmento.metricas) segmento.metricas = window.ordisResponseMetrics.mount(bloco,d);

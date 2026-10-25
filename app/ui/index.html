@@ -170,6 +170,15 @@
 
     <main id="vista-memoria" class="vista config" hidden>
       <h1>Memória</h1>
+      <section class="secao cartao">
+        <h2>Aprendizado da Lucille</h2>
+        <p>Propostas têm origem local verificável. A classificação organiza dados; nunca concede privilégios nem altera a identidade da assistente.</p>
+        <label>Modo <select id="learning-mode"><option value="manual">Manual — todas as propostas exigem aprovação</option><option value="assisted">Assistido — organizar propostas para revisão</option><option value="controlled">Automático controlado — somente categorias autorizadas</option></select></label>
+        <p>Categorias que podem confirmar declarações literais e inequívocas do usuário no modo automático:</p><div id="learning-categories"></div>
+        <button id="learning-save">Salvar política</button><button id="learning-refresh">Atualizar propostas</button><p id="learning-status" role="status"></p>
+        <h3>Alterações e esquecimentos pendentes</h3><div id="learning-requests"></div>
+        <h3>Memória operacional — diário Desenvolvedor</h3><pre id="learning-operational"></pre>
+      </section>
       <p class="sutil">Armazenamento privado local. Candidatos e conflitos precisam de revisão; apenas memórias ativas são recuperadas. O contexto selecionado é enviado ao backend de conversa configurado.</p>
       <section class="secao cartao mem-controls"><h2 class="mem-wide">Estado da memória</h2>
         <button id="mem-confirmed">Confirmadas</button><button id="mem-candidates">Aguardando revisão</button><button id="mem-conflicts">Contradições</button><button id="mem-obsolete">Obsoletas</button>
@@ -196,6 +205,7 @@
           <input id="mem-query" aria-label="Pesquisar memória" placeholder="Busca local FTS5">
           <select id="mem-filter-project" aria-label="Filtrar projeto"></select>
           <select id="mem-filter-kind" aria-label="Filtrar categoria"></select>
+          <select id="mem-filter-category" aria-label="Filtrar finalidade"></select>
           <select id="mem-filter-state" aria-label="Filtrar estado"></select>
           <button id="mem-search">Pesquisar</button><button id="mem-new">Nova memória</button>
         </div>
@@ -484,6 +494,7 @@
   <script src="modelos.js"></script>
   <script src="hardware-settings.js"></script>
   <script src="memory.js"></script>
+  <script src="active-memory.js"></script>
   <script src="identity.js"></script>
   <script src="developer.js"></script>
 </body>

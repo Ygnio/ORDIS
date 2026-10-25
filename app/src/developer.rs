@@ -1,6 +1,6 @@
 //! Workspace capabilities, user-only approvals and local task journal.
 use crate::controle::Caminhos;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -157,6 +157,7 @@ fn db(c: &Caminhos) -> Result<Connection, String> {
     db.busy_timeout(Duration::from_millis(250))
         .map_err(|_| "Histórico ocupado.")?;
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,title TEXT NOT NULL,state TEXT NOT NULL,owner INTEGER,started REAL,updated INTEGER); CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,task TEXT NOT NULL,tool TEXT NOT NULL,state TEXT NOT NULL,proposal TEXT NOT NULL,result TEXT NOT NULL,updated INTEGER NOT NULL);").map_err(|_|"Falha ao preparar histórico privado.")?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS task_memory_scope(task TEXT PRIMARY KEY,workspace TEXT NOT NULL);").map_err(|_|"Escopo do diário indisponível.")?;
     Ok(db)
 }
 pub fn begin(c: &Caminhos, id: &str, title: &str) {
@@ -167,6 +168,8 @@ pub fn begin(c: &Caminhos, id: &str, title: &str) {
         return;
     }
     if let Ok(db) = db(c) {
+        let root = load(c).permissions.workspace;
+        let _=db.execute("INSERT INTO task_memory_scope VALUES(?1,?2) ON CONFLICT(task) DO UPDATE SET workspace=excluded.workspace",params![id,root]);
         let title = if crate::memory::has_secret(title) {
             "Tarefa local"
         } else {
@@ -1233,6 +1236,26 @@ fn inspection(c: &Caminhos, name: &str) -> Result<Value, String> {
     }
     Ok(
         json!({"processes":rows,"limit":100,"scope":"Filhos aprovados e processos com executável/cwd no workspace. Caminhos não acessíveis são omitidos; nenhum argumento, ambiente ou credencial é consultado. Nenhum processo é alterado."}),
+    )
+}
+/// Read-only projection of the existing journal, with no prompts, file content or authority.
+pub fn memory_state(c: &Caminhos, conversation: &str) -> Result<Value, String> {
+    if !load(c).permissions.enabled {
+        return Ok(json!({"enabled":false}));
+    }
+    let db = db(c)?;
+    let task: Option<String> = db
+        .query_row("SELECT state FROM tasks WHERE id=?1", [conversation], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(|_| "Diário indisponível.")?;
+    let mut q=db.prepare("SELECT tool,state,updated FROM operations WHERE task=?1 ORDER BY updated DESC LIMIT 10").map_err(|_|"Diário indisponível.")?;
+    let operations=q.query_map([conversation],|r|Ok(json!({"tool":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"date":r.get::<_,i64>(2)?}))).map_err(|_|"Diário indisponível.")?.collect::<Result<Vec<_>,_>>().map_err(|_|"Diário indisponível.")?;
+    let mut q=db.prepare("SELECT t.id,t.state,t.updated FROM tasks t JOIN task_memory_scope s ON s.task=t.id WHERE s.workspace=?1 AND t.id<>?2 ORDER BY t.updated DESC LIMIT 3").map_err(|_|"Escopo indisponível.")?;
+    let recent=q.query_map(params![load(c).permissions.workspace,conversation],|r|Ok(json!({"conversation":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"updated":r.get::<_,i64>(2)?}))).map_err(|_|"Diário indisponível.")?.collect::<Result<Vec<_>,_>>().map_err(|_|"Diário indisponível.")?;
+    Ok(
+        json!({"untrusted_data":true,"form":"operational","task_state":task,"operations":operations,"recent_same_workspace":recent,"authorization":false}),
     )
 }
 pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> {

@@ -55,12 +55,15 @@ pub fn stop() {
     AUTO_PAUSED.store(true, Ordering::SeqCst);
     STOP_CONSOLIDATION.store(true, Ordering::SeqCst);
 }
-const VERSION: i64 = 4;
-const MIGRATIONS: [&str; 4] = [
+#[path = "active_memory.rs"]
+pub mod active;
+const VERSION: i64 = 5;
+const MIGRATIONS: [&str; 5] = [
     include_str!("migrations/001_memory.sql"),
     include_str!("migrations/002_fts.sql"),
     include_str!("migrations/003_identity.sql"),
     include_str!("migrations/004_reliability.sql"),
+    include_str!("migrations/005_active_memory.sql"),
 ];
 const KINDS: [&str; 11] = [
     "fact",
@@ -413,7 +416,19 @@ impl Store {
         validate(m)?;
         let tx = self.db.savepoint().map_err(error)?;
         let fp = fingerprint(&m.content);
-        if source.is_some() && tx.query_row("SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND kind=?2 AND project_id IS ?3)",params![fp,m.kind,m.project_id],|r|r.get::<_,bool>(0)).map_err(error)? {return Ok(0);}
+        if let Some((conversation, ordinal)) = source {
+            let blocked:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM memory_origin_blocks WHERE conversation=?1 AND ordinal=?2) OR EXISTS(SELECT 1 FROM memory_key_blocks WHERE fact_key=?3 AND fact_key<>'' AND project_id IS ?4)",params![conversation,ordinal,m.fact_key,m.project_id],|r|r.get(0)).map_err(error)?;
+            if blocked {
+                return Ok(0);
+            }
+            let prior:Option<i64>=tx.query_row("SELECT m.id FROM memories m JOIN sources s ON m.id=s.memory_id WHERE s.conversation_id=?1 AND s.ordinal=?2 AND m.kind=?3 AND m.project_id IS ?4 AND m.state<>'obsolete' AND m.provenance='model' LIMIT 1",params![conversation,ordinal,m.kind,m.project_id],|r|r.get(0)).optional().map_err(error)?;
+            if id.is_none() {
+                if let Some(prior) = prior {
+                    return Ok(prior);
+                }
+            }
+        }
+        if source.is_some() && tx.query_row("SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND project_id IS ?2)",params![fp,m.project_id],|r|r.get::<_,bool>(0)).map_err(error)? {return Ok(0);}
 
         let duplicate:Option<i64>=tx.query_row("SELECT id FROM memories WHERE fingerprint=?1 AND kind=?2 AND project_id IS ?3 AND (?4 IS NULL OR id<>?4) LIMIT 1",params![fp,m.kind,m.project_id,id],|r|r.get(0)).optional().map_err(error)?;
         if id.is_some() && duplicate.is_some() {
@@ -469,6 +484,9 @@ impl Store {
         )
         .map_err(error)?;
         tx.commit().map_err(error)?;
+        if source.is_some() {
+            active::classify_extracted(self, saved, m)?;
+        }
         self.event(
             if duplicate.is_some() {
                 "candidate_deduplicated"
@@ -512,7 +530,24 @@ impl Store {
         self.event("memory_approved", 1, 0.0)
     }
     fn delete(&mut self, id: i64) -> Result<(), String> {
-        let tx = self.db.transaction().map_err(error)?;
+        self.db
+            .execute_batch("SAVEPOINT active_delete")
+            .map_err(error)?;
+        let result = self.delete_inner(id);
+        if result.is_ok() {
+            self.db
+                .execute_batch("RELEASE active_delete")
+                .map_err(error)?;
+        } else {
+            self.db
+                .execute_batch("ROLLBACK TO active_delete; RELEASE active_delete")
+                .map_err(error)?;
+        }
+        result
+    }
+    fn delete_inner(&mut self, id: i64) -> Result<(), String> {
+        active::before_delete(self, id)?;
+        let tx = self.db.savepoint().map_err(error)?;
         tx.execute("INSERT OR IGNORE INTO rejected_memories SELECT fingerprint,kind,project_id,?2 FROM memories WHERE id=?1",params![id,now()]).map_err(error)?;
         tx.execute("UPDATE memories SET state='obsolete',updated_at=?2 WHERE kind='summary' AND id IN (SELECT a.memory_id FROM sources a JOIN sources b ON a.conversation_id=b.conversation_id AND a.ordinal=b.ordinal WHERE b.memory_id=?1)",params![id,now()]).map_err(error)?;
         tx.execute("DELETE FROM memories WHERE id=?1", [id])
@@ -686,6 +721,7 @@ impl Store {
         result
     }
     fn retrieve(&self, query: &str, conversation: &str) -> Result<Option<Value>, String> {
+        active::expire(self)?;
         let started = Instant::now();
         let o = self.options()?;
         if !o.retrieval || has_secret(query) {
@@ -711,6 +747,19 @@ impl Store {
         if !fts.is_empty() {
             let mut stmt=self.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) ORDER BY (bm25(memories_fts) - m.importance*0.25 - CASE WHEN m.project_id IS ?2 AND ?2 IS NOT NULL THEN 2 ELSE 0 END - CASE WHEN m.kind IN ('constraint','decision','preference') THEN 0.5 ELSE 0 END - CASE WHEN m.provenance IN ('user','manual') THEN 0.5 ELSE 0 END - 1.0/(1.0+max(0,?3-m.updated_at)/86400.0)) ASC LIMIT 60").map_err(error)?;
             rows=stmt.query_map(params![fts,project_id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+        }
+        if query
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| ["projeto", "projetos", "project", "projects"].contains(&w))
+        {
+            let mut q=self.db.prepare("SELECT id,kind,content,provenance,project_id FROM memories WHERE state='active' AND (kind='project' OR id IN (SELECT memory_id FROM memory_labels WHERE category='projects')) AND (project_id IS NULL OR project_id IS ?1) ORDER BY importance DESC,updated_at DESC,id DESC LIMIT 10").map_err(error)?;
+            let projects=q.query_map([project_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+            for row in projects {
+                if !rows.iter().any(|v| v["id"] == row["id"]) {
+                    rows.push(row);
+                }
+            }
         }
         let mut preferences=self.db.prepare("SELECT id,kind,content,provenance,project_id FROM memories WHERE state='active' AND kind IN ('preference','constraint') AND (project_id IS NULL OR project_id IS ?1) ORDER BY importance DESC,updated_at DESC LIMIT 20").map_err(error)?;
         let durable=preferences.query_map([project_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
@@ -779,6 +828,14 @@ impl Store {
             "memory_sequence",
             "processing",
             "diagnostics",
+            "learning_policy",
+            "memory_labels",
+            "memory_versions",
+            "memory_requests",
+            "memory_origin_blocks",
+            "memory_key_blocks",
+            "memory_evidence",
+            "learning_audit",
         ]
         .iter()
         .enumerate()
@@ -974,8 +1031,8 @@ impl Store {
             let rejected: bool = self
                 .db
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND project_id IS ?2)",
-                    params![fingerprint(&text),p],
+                    "SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND project_id IS ?2) OR EXISTS(SELECT 1 FROM memory_origin_blocks WHERE conversation=?3 AND ordinal=?4)",
+                    params![fingerprint(&text),p,id,ordinal],
                     |r| r.get(0),
                 )
                 .map_err(error)?;
@@ -1220,11 +1277,35 @@ fn classify(text: &str) -> Option<&'static str> {
         "se eu ",
         "poderia ",
         "será que ",
+        "finja ",
+        "imagine ",
+        "brincadeira",
+        "encenação",
     ]
     .iter()
     .any(|p| s.starts_with(p))
     {
         return None;
+    }
+    if s.starts_with("meu projeto fictício se chama")
+        || s.starts_with("estou desenvolvendo um aplicativo chamado")
+        || s.starts_with("estou desenvolvendo um projeto chamado")
+    {
+        return Some("project");
+    }
+    if s.starts_with("até ") && (s.contains("utilizarei ") || s.contains("usarei ")) {
+        return Some("fact");
+    }
+    if [
+        "meu editor favorito",
+        "meu editor preferido",
+        "lembra que meu editor favorito",
+        "lembre que meu editor favorito",
+    ]
+    .iter()
+    .any(|p| s.starts_with(p))
+    {
+        return Some("preference");
     }
     if s.starts_with("o nome do meu projeto")
         || s.starts_with("meu projeto se chama")
@@ -1240,6 +1321,9 @@ fn classify(text: &str) -> Option<&'static str> {
         ("minha preferência", "preference"),
         ("meu computador", "hardware"),
         ("meu hardware", "hardware"),
+        ("meu software", "hardware"),
+        ("meu sistema operacional", "hardware"),
+        ("experiência:", "solution"),
         ("decidimos ", "decision"),
         ("decisão:", "decision"),
         ("resolvi ", "solution"),
@@ -1259,7 +1343,10 @@ fn classify(text: &str) -> Option<&'static str> {
 }
 fn extract_key(text: &str) -> String {
     let s = durable_text(text);
-    if s.contains("nome do meu projeto fictício") || s.contains("projeto fictício se chama") {
+    if s.contains("meu editor favorito") || s.contains("meu editor preferido") {
+        "preferred-editor".into()
+    } else if s.contains("nome do meu projeto fictício") || s.contains("projeto fictício se chama")
+    {
         "fictional-project-name".into()
     } else if s.contains("nome do meu projeto") || s.contains("meu projeto se chama") {
         "project-name".into()
@@ -1490,7 +1577,30 @@ fn replay_one(c: &Caminhos, s: &mut Store, path: &Path) -> Result<bool, String> 
 }
 
 pub fn retrieve(c: &Caminhos, query: &str, conversation: &str) -> Result<Option<Value>, String> {
-    with_chat_store(c, |s| s.retrieve(query, conversation))
+    with_chat_store(c, |s| {
+        let mut context = s.retrieve(query, conversation)?;
+        if s.options()?.retrieval {
+            if let Ok(state) = crate::developer::memory_state(c, conversation) {
+                if state["task_state"].is_string() {
+                    let appendix = wrapped(&[json!({"form":"operational","data":state})]);
+                    let current = context
+                        .as_ref()
+                        .and_then(|v| v["content"].as_str())
+                        .unwrap_or("");
+                    let content = format!("{current}\n{appendix}");
+                    if content.len().div_ceil(2) + 16 <= s.options()?.token_budget {
+                        if let Some(v) = context.as_mut() {
+                            v["content"] = json!(content);
+                        } else {
+                            context =
+                                Some(json!({"role":"user","content":content,"_lucille_ids":[]}));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(context)
+    })
 }
 
 /// Maintenance must never queue a chat behind a backup/export/consolidation.
@@ -1694,6 +1804,9 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
         return run_consolidation(c, false);
     }
     with_store(c, |s| match action {
+        "learning_get" | "learning_save" | "active_get" | "active_list" | "reclassify"
+        | "versions" | "requests" | "forget_confirm" | "request_reject" | "reject"
+        | "undo_auto" => active::action(s, action, &args),
         "identity_get" => Ok(
             json!({"profile":s.profile()?.unwrap_or_else(||legacy_profile(c)),"saved":s.profile()?.is_some(),"legacy_present":legacy_present(c)}),
         ),
@@ -1707,7 +1820,8 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
         "technical" => s.technical(),
         "technical_export" => Ok(json!({"path":s.technical_export()?})),
         "approve" => {
-            s.approve(
+            active::approve(
+                s,
                 args["id"].as_i64().ok_or("ID inválido.")?,
                 args["replace"].as_bool().unwrap_or(false),
             )?;
