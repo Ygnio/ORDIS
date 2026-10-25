@@ -63,3 +63,13 @@ pending-records/
 **/developer-config.json
 **/developer-state*
 *.backup
+screenshots/
+captures/
+attachments/
+vectors/
+vector-index/
+*.f32
+*.fvecs
+*.hnsw
+*.npy
+*.npz

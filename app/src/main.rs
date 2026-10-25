@@ -14,6 +14,7 @@ mod modelos;
 mod proxmox;
 mod response_metrics;
 mod settings;
+mod vision;
 mod win;
 
 use std::os::windows::process::CommandExt;
@@ -154,6 +155,12 @@ fn renomear_sessao(c: State<'_, Ctx>, id: String, titulo: String) -> Result<(), 
 }
 
 #[tauri::command]
+async fn vision_action(c: State<'_, Ctx>, action: String, args: Value) -> Result<Value, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || vision::action(&c.caminhos, &action, args)).await
+}
+
+#[tauri::command]
 async fn enviar(
     app: AppHandle,
     c: State<'_, Ctx>,
@@ -228,6 +235,9 @@ fn abrir_url(url: String) -> Result<(), String> {
 async fn imagem(c: State<'_, Ctx>, caminho: String) -> Result<String, String> {
     let c = c.inner().clone();
     em_segundo_plano(move || {
+        if let Ok(url) = vision::data_url(&c.caminhos, std::path::Path::new(&caminho)) {
+            return Ok(url);
+        }
         let alvo = ferramentas::dentro_do_workspace(&c.caminhos, &caminho)?;
         agente::data_url(&alvo)
     })
@@ -471,6 +481,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    vision::cleanup(&caminhos, true);
     memory::start_worker(&caminhos);
     tauri::Builder::default()
         .manage::<Ctx>(Arc::new(App {
@@ -479,6 +490,7 @@ fn main() {
             imagem: Mutex::new(None),
         }))
         .invoke_handler(tauri::generate_handler![
+            vision_action,
             painel,
             memory_action,
             memory_stop,

@@ -20,6 +20,7 @@ ureq = { version = "2", features = ["json"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 html2text = "0.14"
 base64 = "0.22"
+image = { version = "=0.25.8", default-features = false, features = ["png", "jpeg", "webp"] }
 url = "2"
 sha2 = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

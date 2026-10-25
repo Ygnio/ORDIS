@@ -79,12 +79,13 @@
             <div id="anexos" class="anexos"></div>
             <textarea id="entrada" rows="1" placeholder="Pergunte ao ORDIS…"></textarea>
             <div class="barra-compositor">
+              <button id="capturar-tela" class="icone" data-dica="Captura autorizada" disabled>Captura</button>
               <button id="anexar" class="icone" data-dica="Anexar imagem"><svg><use href="#i-clipe"/></svg></button>
               <span id="estado-agente" class="estado-agente"></span>
               <button id="enviar" class="enviar" data-dica="Enviar · Enter"><svg><use href="#i-enviar"/></svg></button>
             </div>
           </div>
-          <input id="arquivo" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+          <input id="arquivo" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
         </div>
       </section>
     </main>
@@ -270,6 +271,32 @@
         </div>
       </section>
 
+      <section class="secao" id="secao-visao">
+        <h2>Visão da Lucille</h2>
+        <label><input id="vs-enabled" type="checkbox"> Habilitar imagens locais</label>
+        <label><input id="vs-screenshot" type="checkbox"> Captura autorizada pelo seletor do Windows</label>
+        <label>Limite por imagem (MiB, 1–20)<input id="vs-max_mb" type="number" min="1" max="20"></label>
+        <label>Lado máximo após redimensionar (256–4096)<input id="vs-max_edge" type="number" min="256" max="4096"></label>
+        <label>Retenção em dias (0 = apagar ao reabrir; até 30)<input id="vs-retention_days" type="number" min="0" max="30"></label>
+        <label>Mensagens anteriores com imagem no contexto (0–8)<input id="vs-history_images" type="number" min="0" max="8"></label>
+        <p class="sutil pequeno">Até quatro imagens por mensagem, PNG/JPEG/WebP. Imagens são normalizadas para PNG e EXIF removido. Capturas exigem seleção, colagem e revisão da miniatura antes de enviar. Sem gravação contínua. Referências expiradas permanecem no histórico como indisponíveis.</p>
+        <button id="vs-save">Salvar visão</button><button id="vs-diagnostic">Diagnóstico</button><button id="vs-probe">Testar com imagem sintética</button>
+        <pre id="vs-status" class="sutil pequeno" role="status"></pre>
+      </section>
+      <section class="secao" id="secao-semantica">
+        <h2>Memória semântica opcional</h2>
+        <label><input id="sv-enabled" type="checkbox"> Habilitar embeddings textuais locais</label>
+        <label>Provedor: endpoint local compatível /v1/embeddings<input id="sv-endpoint" placeholder="http://127.0.0.1:8081"></label>
+        <label>Identificador do modelo (altere ao trocar pesos)<input id="sv-model_id"></label>
+        <label>Caminho informativo do GGUF local<input id="sv-model_path"></label>
+        <label>Dimensão<input id="sv-dimension" type="number" min="1" max="4096"></label>
+        <label>Prefixo de consulta exigido pelo modelo<textarea id="sv-query_prefix"></textarea></label>
+        <p class="sutil pequeno">O usuário inicia o provedor separado. Não instala modelos nem reserva VRAM. Indexação ociosa de memórias confirmadas; falhas preservam busca lexical. Trocar endpoint/modelo/dimensão invalida os vetores. O caminho não inicia processos.</p>
+        <button id="sv-save">Salvar provedor</button><button id="sv-refresh">Atualizar estado</button><button id="sv-reindex">Reindexar</button>
+        <pre id="sv-status" class="sutil pequeno" role="status"></pre>
+        <label>Comparar busca<input id="sv-query"></label><label>ID do projeto (vazio = global)<input id="sv-project" type="number"></label><label>Categoria (vazio = todas)<input id="sv-category"></label>
+        <button id="sv-compare">Comparar FTS5 e híbrida</button><pre id="sv-results" class="sutil pequeno"></pre>
+      </section>
       <section class="secao" id="secao-diagnostico">
         <div class="linha-config"><h2>Hardware e serviços <span class="fraco">somente leitura</span></h2><button id="diagnostico-atualizar">Atualizar diagnóstico</button></div>
         <p class="sutil pequeno">Consulta esta máquina e os serviços configurados. Não instala componentes nem altera o servidor.</p>
@@ -493,6 +520,7 @@
   <script src="config.js"></script>
   <script src="modelos.js"></script>
   <script src="hardware-settings.js"></script>
+  <script src="semantic-vision.js"></script>
   <script src="memory.js"></script>
   <script src="active-memory.js"></script>
   <script src="identity.js"></script>

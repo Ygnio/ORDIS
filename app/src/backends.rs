@@ -260,6 +260,7 @@ fn client(timeout: Duration) -> Result<reqwest::Client, String> {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
     reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(Duration::from_secs(5))
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
@@ -571,6 +572,17 @@ pub fn chat(
     emit: &dyn Fn(&str, Value),
 ) -> Result<ChatResponse, String> {
     let (base, key) = active_endpoint(c);
+    let contains_images = messages.iter().any(|m| {
+        m["content"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|p| p["type"] == "image_url"))
+    });
+    if contains_images {
+        let u = url::Url::parse(&base).map_err(|_| "Endpoint inválido.")?;
+        if !matches!(u.host_str(), Some("127.0.0.1" | "[::1]")) {
+            return Err("Imagens só podem ser enviadas a loopback literal local.".into());
+        }
+    }
     let model = selected_model(c)?;
     let mut body = request_body(&model, messages, max_tokens);
     if !tools.is_empty() && active_capabilities(c).tools {
@@ -662,12 +674,10 @@ async fn chat_async(
     };
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
         emit("metricas", json!(metrics.snapshot("interrupted")));
         return Err(format!(
-            "Backend recusou o pedido (HTTP {}): {}",
-            status.as_u16(),
-            body.chars().take(400).collect::<String>()
+            "Backend recusou o pedido (HTTP {}). Verifique compatibilidade, contexto e diagnóstico local; o corpo da resposta foi omitido para proteger anexos e conteúdo privado.",
+            status.as_u16()
         ));
     }
     let mut stream = response.bytes_stream();

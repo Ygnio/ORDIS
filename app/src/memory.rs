@@ -57,13 +57,16 @@ pub fn stop() {
 }
 #[path = "active_memory.rs"]
 pub mod active;
-const VERSION: i64 = 5;
-const MIGRATIONS: [&str; 5] = [
+#[path = "semantic.rs"]
+pub mod semantic;
+const VERSION: i64 = 6;
+const MIGRATIONS: [&str; 6] = [
     include_str!("migrations/001_memory.sql"),
     include_str!("migrations/002_fts.sql"),
     include_str!("migrations/003_identity.sql"),
     include_str!("migrations/004_reliability.sql"),
     include_str!("migrations/005_active_memory.sql"),
+    include_str!("migrations/006_semantic.sql"),
 ];
 const KINDS: [&str; 11] = [
     "fact",
@@ -97,17 +100,6 @@ fn fingerprint(s: &str) -> String {
                 .as_bytes()
         )
     )
-}
-
-/// Future local-only embedding extension. Implementations must never perform network I/O.
-#[allow(dead_code)]
-pub trait LocalEmbeddingIndex {
-    fn search_local(
-        &self,
-        text: &str,
-        project: Option<i64>,
-        limit: usize,
-    ) -> Result<Vec<i64>, String>;
 }
 
 /// Production memory never follows an arbitrary ORDIS_PROJECT runtime into a Git checkout.
@@ -743,11 +735,7 @@ impl Store {
             .optional()
             .map_err(error)?
             .unwrap_or(o.project_id);
-        let mut rows: Vec<Value> = Vec::new();
-        if !fts.is_empty() {
-            let mut stmt=self.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) ORDER BY (bm25(memories_fts) - m.importance*0.25 - CASE WHEN m.project_id IS ?2 AND ?2 IS NOT NULL THEN 2 ELSE 0 END - CASE WHEN m.kind IN ('constraint','decision','preference') THEN 0.5 ELSE 0 END - CASE WHEN m.provenance IN ('user','manual') THEN 0.5 ELSE 0 END - 1.0/(1.0+max(0,?3-m.updated_at)/86400.0)) ASC LIMIT 60").map_err(error)?;
-            rows=stmt.query_map(params![fts,project_id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
-        }
+        let mut rows = semantic::ranked(self, query, project_id, None, true)?;
         if query
             .to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
@@ -836,6 +824,10 @@ impl Store {
             "memory_key_blocks",
             "memory_evidence",
             "learning_audit",
+            "semantic_settings",
+            "semantic_vectors",
+            "semantic_queue",
+            "visual_sources",
         ]
         .iter()
         .enumerate()
@@ -1576,6 +1568,17 @@ fn replay_one(c: &Caminhos, s: &mut Store, path: &Path) -> Result<bool, String> 
     Ok(false)
 }
 
+pub fn record_visual(c: &Caminhos, conversation: &str, ordinal: usize) -> Result<(), String> {
+    with_chat_store(c, |s| {
+        s.db.execute(
+            "INSERT OR IGNORE INTO visual_sources VALUES(?1,?2)",
+            params![conversation, ordinal as i64],
+        )
+        .map_err(error)?;
+        Ok(())
+    })
+}
+
 pub fn retrieve(c: &Caminhos, query: &str, conversation: &str) -> Result<Option<Value>, String> {
     with_chat_store(c, |s| {
         let mut context = s.retrieve(query, conversation)?;
@@ -1740,6 +1743,9 @@ pub fn idle_tick(c: &Caminhos) -> Result<(), String> {
         return Ok(());
     }
     let path = database_path(c)?;
+    if path.exists() {
+        let _ = semantic::tick(c, &STOP_CONSOLIDATION);
+    }
     {
         let Ok(_guard) = ACCESS.try_lock() else {
             return Ok(());
@@ -1804,6 +1810,9 @@ pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> 
         return run_consolidation(c, false);
     }
     with_store(c, |s| match action {
+        "semantic_get" | "semantic_save" | "semantic_reindex" | "semantic_compare" => {
+            semantic::action(s, action, &args)
+        }
         "learning_get" | "learning_save" | "active_get" | "active_list" | "reclassify"
         | "versions" | "requests" | "forget_confirm" | "request_reject" | "reject"
         | "undo_auto" => active::action(s, action, &args),

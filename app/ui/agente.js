@@ -636,13 +636,17 @@
 
   function lerArquivos(arquivos) {
     for (const f of arquivos) {
-      if (!f.type.startsWith('image/')) continue;
-      if (f.size > 15 * 1024 * 1024) {
-        avisar(`${f.name} passa de 15 MB.`, true);
+      const cfg = window.LucilleVision?.getConfig();
+      if (!cfg?.enabled) { avisar('Habilite imagens nas configurações de Visão.', true); return; }
+      if (!['image/png','image/jpeg','image/webp'].includes(f.type)) { avisar('Use PNG, JPEG ou WebP.', true); continue; }
+      if (anexos.length >= 4) { avisar('Até quatro imagens por mensagem.', true); break; }
+      if (f.size > cfg.max_mb * 1024 * 1024) {
+        avisar(`${f.name} passa de ${cfg.max_mb} MiB.`, true);
         continue;
       }
       const leitor = new FileReader();
       leitor.onload = () => {
+        if (anexos.length >= 4) { avisar('Até quatro imagens por mensagem.', true); return; }
         anexos.push(leitor.result);
         mostrarAnexos();
       };
