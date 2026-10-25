@@ -464,6 +464,9 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
         }
         id
     };
+    if evidence {
+        s.db.execute("UPDATE sources SET description='resultado nativo verificado; referência no diário local' WHERE memory_id=?1 AND conversation_id=?2 AND ordinal=?3",params![id,conversation,source_ordinal]).map_err(error)?;
+    }
     // Native update proposals do not revoke confirmed facts before the human decides.
     if let Some(old) = old {
         if old.id == id {
