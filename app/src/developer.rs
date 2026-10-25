@@ -98,6 +98,14 @@ fn validate(c: &Caminhos, v: Config) -> Result<Config, String> {
         let root = Path::new(&p.workspace)
             .canonicalize()
             .map_err(|_| "Selecione um workspace existente.")?;
+        if root.components().any(
+            |part| matches!(part,Component::Normal(name) if sensitive(&name.to_string_lossy())),
+        ) {
+            return Err(
+                "Pastas privadas/protegidas não podem ser usadas como raiz de desenvolvimento."
+                    .into(),
+            );
+        }
         let mut protected = vec![c.projeto.clone(), c.runtime.clone()];
         if let Some(parent) = std::env::current_exe()
             .ok()

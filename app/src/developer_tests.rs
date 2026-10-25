@@ -401,3 +401,23 @@ fn execution_cannot_boot_from_a_runtime_in_the_editable_workspace() {
     .unwrap();
     assert!(error.contains("fora do workspace"));
 }
+
+#[test]
+fn selecting_a_credential_directory_as_workspace_cannot_bypass_private_path_guards() {
+    let f = Fixture::new();
+    let mut cfg = load(&f.c);
+    for name in [
+        ".ssh",
+        ".aws",
+        ".azure",
+        ".codex",
+        "profiles",
+        "private",
+        "developer-data",
+    ] {
+        let root = f.root.join(name);
+        fs::create_dir(&root).unwrap();
+        cfg.permissions.workspace = root.to_string_lossy().into();
+        assert!(validate(&f.c, cfg.clone()).is_err(), "{name}");
+    }
+}
