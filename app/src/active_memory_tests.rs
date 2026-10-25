@@ -18,6 +18,22 @@ fn similarity_does_not_merge_changed_facts_or_numbers() {
         "Meu projeto sintético agora se chama Horizonte"
     ));
 }
+#[test]
+fn temporal_extraction_never_guesses_a_permanent_identity_fact() {
+    let mut s = Fixture::new();
+    s.user("Até amanhã utilizarei o perfil sintético", 0);
+    let row = s.list("", None, "", "").unwrap().remove(0);
+    assert_eq!(labels(&s, &row).unwrap()["category"], "temporary");
+    assert!(approve(&mut s, row.id, false).is_err());
+    action(
+        &mut s,
+        "reclassify",
+        &json!({"id":row.id,"category":"temporary","expires_at":now()+100,"tags":[]}),
+    )
+    .unwrap();
+    approve(&mut s, row.id, false).unwrap();
+    assert_eq!(classify("Até logo, depois conversamos"), None);
+}
 use std::ops::{Deref, DerefMut};
 struct Fixture {
     store: Option<Store>,
@@ -295,7 +311,7 @@ fn reclassify_and_temporary_expiration() {
     let mut s = Fixture::new();
     let id = proposed(
         &mut s,
-        "Até amanhã utilizarei o perfil sintético",
+        "Meu software sintético possui configuração especial",
         "technical_profile",
     );
     assert!(action(

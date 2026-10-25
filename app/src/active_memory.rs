@@ -40,6 +40,17 @@ fn category(k: &str) -> &str {
         _ => "user_identity",
     }
 }
+pub(super) fn classify_extracted(s: &Store, id: i64, m: &Input) -> Result<(), String> {
+    let temporal = durable_text(&m.content).starts_with("até ");
+    let cat = if temporal {
+        "temporary"
+    } else {
+        category(&m.kind)
+    };
+    // A deadline must be reviewed, not guessed from relative language.
+    s.db.execute("INSERT OR IGNORE INTO memory_labels(memory_id,category,form,tags,expires_at,policy) VALUES(?1,?2,'semantic','[]',NULL,'review_required')",params![id,cat]).map_err(error)?;
+    Ok(())
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Policy {
@@ -343,6 +354,7 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
             return Err("Esquecimento exige pedido explícito na última mensagem real do usuário. Arquivos e ferramentas não podem solicitá-lo.".into());
         }
         let m = target.unwrap();
+        s.db.execute("UPDATE memory_requests SET state='stale' WHERE target=?1 AND operation='forget' AND state='pending' AND expected<>?2",params![m.id,stamp(&m)]).map_err(error)?;
         let existing:Option<i64>=s.db.query_row("SELECT id FROM memory_requests WHERE operation='forget' AND target=?1 AND state='pending'",[m.id],|r|r.get(0)).optional().map_err(error)?;
         let id = if let Some(id) = existing {
             id
@@ -360,6 +372,9 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
     }
     let cat = args["category"].as_str().ok_or("Categoria inválida.")?;
     let k = kind(cat)?;
+    if durable_text(content).starts_with("até ") && cat != "temporary" {
+        return Err("Declaração temporal exige categoria temporary e validade explícita.".into());
+    }
     if private_for_memory(content) {
         return Err("Informação sensível não pode ser proposta por ferramenta.".into());
     }
@@ -554,6 +569,13 @@ pub fn observe(c: &Caminhos, conversation: &str, ordinal: usize, name: &str, tex
 }
 
 pub fn approve(s: &mut Store, id: i64, replace: bool) -> Result<(), String> {
+    let meta = labels(s, &one(s, id)?)?;
+    if meta["category"] == "temporary" && meta["expires_at"].as_i64().is_none_or(|t| t <= now()) {
+        return Err(
+            "Defina uma validade futura ao reclassificar a memória temporária antes de aprovar."
+                .into(),
+        );
+    }
     let req:Option<(i64,i64,String)>=s.db.query_row("SELECT id,target,expected FROM memory_requests WHERE candidate=?1 AND state='pending' AND operation='update'",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(error)?;
     s.db.execute_batch("SAVEPOINT active_approval")
         .map_err(error)?;

@@ -484,6 +484,9 @@ impl Store {
         )
         .map_err(error)?;
         tx.commit().map_err(error)?;
+        if source.is_some() {
+            active::classify_extracted(self, saved, m)?;
+        }
         self.event(
             if duplicate.is_some() {
                 "candidate_deduplicated"
@@ -1015,8 +1018,8 @@ impl Store {
             let rejected: bool = self
                 .db
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND project_id IS ?2)",
-                    params![fingerprint(&text),p],
+                    "SELECT EXISTS(SELECT 1 FROM rejected_memories WHERE fingerprint=?1 AND project_id IS ?2) OR EXISTS(SELECT 1 FROM memory_origin_blocks WHERE conversation=?3 AND ordinal=?4)",
+                    params![fingerprint(&text),p,id,ordinal],
                     |r| r.get(0),
                 )
                 .map_err(error)?;
@@ -1277,6 +1280,20 @@ fn classify(text: &str) -> Option<&'static str> {
     {
         return Some("project");
     }
+    if s.starts_with("até ") && (s.contains("utilizarei ") || s.contains("usarei ")) {
+        return Some("fact");
+    }
+    if [
+        "meu editor favorito",
+        "meu editor preferido",
+        "lembra que meu editor favorito",
+        "lembre que meu editor favorito",
+    ]
+    .iter()
+    .any(|p| s.starts_with(p))
+    {
+        return Some("preference");
+    }
     if s.starts_with("o nome do meu projeto")
         || s.starts_with("meu projeto se chama")
         || s.starts_with("agora meu projeto se chama")
@@ -1294,7 +1311,6 @@ fn classify(text: &str) -> Option<&'static str> {
         ("meu software", "hardware"),
         ("meu sistema operacional", "hardware"),
         ("experiência:", "solution"),
-        ("até ", "fact"),
         ("decidimos ", "decision"),
         ("decisão:", "decision"),
         ("resolvi ", "solution"),
@@ -1314,7 +1330,10 @@ fn classify(text: &str) -> Option<&'static str> {
 }
 fn extract_key(text: &str) -> String {
     let s = durable_text(text);
-    if s.contains("nome do meu projeto fictício") || s.contains("projeto fictício se chama") {
+    if s.contains("meu editor favorito") || s.contains("meu editor preferido") {
+        "preferred-editor".into()
+    } else if s.contains("nome do meu projeto fictício") || s.contains("projeto fictício se chama")
+    {
         "fictional-project-name".into()
     } else if s.contains("nome do meu projeto") || s.contains("meu projeto se chama") {
         "project-name".into()
