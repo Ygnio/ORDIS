@@ -44,6 +44,10 @@ def run(package,real=False):
             archive.extractall(stage)
         (home/'config').mkdir();(home/'config/paths.json').write_text('{"runtime":"runtime"}',encoding='utf-8')
         (home/'runtime/inference').mkdir(parents=True)
+        if not real:
+            tabby=home/'runtime/tabbyAPI';tabby.mkdir()
+            (tabby/'config.yml').write_text('model:\n  tool_format: qwen3_5\n',encoding='utf-8')
+            (tabby/'api_tokens.yml').write_text('api_key: synthetic-fixture-only\n',encoding='utf-8')
         if real:endpoint='http://127.0.0.1:8080'
         else:
             server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Backend);threading.Thread(target=server.serve_forever,daemon=True).start();endpoint=f'http://127.0.0.1:{server.server_port}'

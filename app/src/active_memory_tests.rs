@@ -214,6 +214,15 @@ fn update_keeps_versions_and_requires_human() {
     approve(&mut s, next, true).unwrap();
     assert_eq!(one(&s, old).unwrap().state, "obsolete");
     assert_eq!(one(&s, next).unwrap().state, "active");
+    let recalled = s
+        .retrieve("Qual é o nome do projeto fictício?", "synthetic-new")
+        .unwrap()
+        .unwrap();
+    assert!(recalled["content"].as_str().unwrap().contains("Horizonte"));
+    assert!(!recalled["content"]
+        .as_str()
+        .unwrap()
+        .contains("Projeto: Aurora sintético"));
     let history = action(&mut s, "versions", &json!({"id":next})).unwrap();
     assert!(history
         .as_array()

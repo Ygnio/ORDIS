@@ -748,6 +748,19 @@ impl Store {
             let mut stmt=self.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) ORDER BY (bm25(memories_fts) - m.importance*0.25 - CASE WHEN m.project_id IS ?2 AND ?2 IS NOT NULL THEN 2 ELSE 0 END - CASE WHEN m.kind IN ('constraint','decision','preference') THEN 0.5 ELSE 0 END - CASE WHEN m.provenance IN ('user','manual') THEN 0.5 ELSE 0 END - 1.0/(1.0+max(0,?3-m.updated_at)/86400.0)) ASC LIMIT 60").map_err(error)?;
             rows=stmt.query_map(params![fts,project_id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
         }
+        if query
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| ["projeto", "projetos", "project", "projects"].contains(&w))
+        {
+            let mut q=self.db.prepare("SELECT id,kind,content,provenance,project_id FROM memories WHERE state='active' AND (kind='project' OR id IN (SELECT memory_id FROM memory_labels WHERE category='projects')) AND (project_id IS NULL OR project_id IS ?1) ORDER BY importance DESC,updated_at DESC,id DESC LIMIT 10").map_err(error)?;
+            let projects=q.query_map([project_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+            for row in projects {
+                if !rows.iter().any(|v| v["id"] == row["id"]) {
+                    rows.push(row);
+                }
+            }
+        }
         let mut preferences=self.db.prepare("SELECT id,kind,content,provenance,project_id FROM memories WHERE state='active' AND kind IN ('preference','constraint') AND (project_id IS NULL OR project_id IS ?1) ORDER BY importance DESC,updated_at DESC LIMIT 20").map_err(error)?;
         let durable=preferences.query_map([project_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
         let mut merged = durable;
