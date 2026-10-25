@@ -29,6 +29,7 @@ if (typeof window !== 'undefined') (() => {
   }
   async function refresh() {
     const data = await call('load'); projects = data.projects;
+    select(get('filter-category'),Object.entries(window.ActiveMemoryUI?.labels||{}),'Todas as finalidades');
     for (const id of ['active-project','filter-project','project','project-edit']) select(get(id), projects.map(p => [p.id,p.name]), id === 'filter-project' ? 'Todos os projetos' : 'Sem projeto');
     for (const id of ['kind','filter-kind']) select(get(id), data.kinds.map(k => [k, labels[k]]), id === 'filter-kind' ? 'Todas as categorias' : null);
     for (const id of ['state','filter-state']) select(get(id), data.states.map(k => [k, labels[k]]), id === 'filter-state' ? 'Todos os estados' : null);
@@ -53,7 +54,7 @@ if (typeof window !== 'undefined') (() => {
     get('kind').value = m?.kind ?? 'fact'; get('project').value = m?.project_id ?? ''; get('state').value = m?.state ?? 'active'; get('importance').value = m?.importance ?? 3; get('key').value = m?.fact_key ?? ''; get('content').value = m?.content ?? ''; get('form').hidden = false; get('content').focus();
   }
   async function search() {
-    const rows = await call('list', { query:get('query').value, project_id:MemoryUI.nullableId(get('filter-project').value), kind:get('filter-kind').value, state:get('filter-state').value });
+    const rows = (await call('active_list', { query:get('query').value, project_id:MemoryUI.nullableId(get('filter-project').value), category:get('filter-category').value, state:get('filter-state').value })).filter(m=>!get('filter-kind').value||m.kind===get('filter-kind').value);
     const list = get('list'); list.replaceChildren();
     if (!rows.length) { const p = document.createElement('p'); p.textContent = 'Nenhuma memória encontrada.'; list.append(p); }
     for (const m of rows) {
@@ -62,6 +63,11 @@ if (typeof window !== 'undefined') (() => {
       content.textContent = m.content;
       source.textContent = `Origem: ${m.provenance} · criado ${new Date(m.created_at * 1000).toLocaleString()} · atualizado ${new Date(m.updated_at * 1000).toLocaleString()} · fontes: ${JSON.stringify(m.sources)}`;
       article.append(title,content,source);
+      const meta=document.createElement('p');meta.textContent=`Finalidade: ${window.ActiveMemoryUI?.labels[m.classification.category]||m.classification.category} · ${m.classification.form} · etiquetas: ${m.classification.tags.join(', ')} · política: ${m.classification.policy} · validade: ${m.classification.expires_at?new Date(m.classification.expires_at*1000).toLocaleString():'duradoura'}`;article.append(meta);
+      const history=document.createElement('button');history.textContent='Histórico de versões';history.onclick=async()=>{try{const p=document.createElement('pre');p.textContent=JSON.stringify(await call('versions',{id:m.id}),null,2);article.append(p);history.disabled=true;}catch(e){message(String(e));}};article.append(history);
+      const classify=document.createElement('button');classify.textContent='Reclassificar / etiquetas';classify.onclick=async()=>{try{const category=window.prompt('Finalidade: '+Object.keys(window.ActiveMemoryUI.labels).join(', '),m.classification.category);if(!category)return;const tags=window.prompt('Etiquetas separadas por vírgula',m.classification.tags.join(', '));if(tags===null)return;let expires_at=null;if(category==='temporary'){const date=window.prompt('Validade (ISO: AAAA-MM-DD)',new Date(Date.now()+86400000).toISOString().slice(0,10));if(!date)return;expires_at=Math.floor(Date.parse(date)/1000);}await call('reclassify',{id:m.id,category,tags:tags.split(',').map(x=>x.trim()).filter(Boolean),expires_at});await search();}catch(e){message(String(e));}};article.append(classify);
+      if(m.classification.policy==='controlled-v1'){const undo=document.createElement('button');undo.textContent='Desfazer confirmação automática';undo.onclick=async()=>{await call('undo_auto',{id:m.id});await refresh();};article.append(undo);}
+      if(m.state==='candidate'||m.state==='conflict'){const reject=document.createElement('button');reject.textContent='Rejeitar proposta';reject.onclick=async()=>{try{await call('reject',{id:m.id});await refresh();}catch(e){message(String(e));}};article.append(reject);}
       if(m.state==='candidate'||m.state==='conflict'){const approve=document.createElement('button');approve.textContent=m.state==='conflict'?'Usar esta versão; desativar anteriores':'Aprovar';approve.onclick=async()=>{const replace=m.state==='conflict';if(replace&&!window.confirm('Confirmar esta versão e marcar as outras versões da mesma chave e projeto como obsoletas?'))return;try{await call('approve',{id:m.id,replace});await refresh();message('Memória aprovada.');}catch(e){message(String(e));}};article.append(approve);}
       const edit = document.createElement('button'); edit.textContent = 'Revisar / editar'; edit.onclick = () => editor(m); article.append(edit);
       const del = document.createElement('button'); del.textContent = 'Excluir'; del.onclick = async () => { if (!window.confirm(`Excluir memória #${m.id}? Fontes JSON e backups existentes permanecerão.`)) return; try { await call('delete',{id:m.id}); await refresh(); message('Memória excluída.'); } catch(e) { message(String(e)); } }; article.append(del); list.append(article);

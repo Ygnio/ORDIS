@@ -140,7 +140,7 @@ def run(package, metrics=True):
         db_path = fixture / 'runtime/memory/lucille.sqlite3'
         assert db_path.is_file()
         with closing(sqlite3.connect(db_path)) as db:
-            assert db.execute('pragma user_version').fetchone()[0] == 4
+            assert db.execute('pragma user_version').fetchone()[0] == 5
             assert db.execute('select state from memories').fetchone()[0] == 'candidate'
             assert db.execute("select count(*) from messages").fetchone()[0] == 2
         candidate=mem('list',{'kind':'preference','state':'candidate'})[0]
@@ -218,7 +218,7 @@ def run(package, metrics=True):
         technical=mem('technical')
         assert not any(t in json.dumps(technical) for t in ['Girassol','Aurora','Boreal','Atlas',str(fixture)])
         exported=Path(mem('technical_export')['path']);assert exported.is_relative_to(fixture)
-        assert json.loads(exported.read_text(encoding='utf-8'))['schema']==4
+        assert json.loads(exported.read_text(encoding='utf-8'))['schema']==5
         print(json.dumps({'reliability_release':'passed','scenarios':['persistence','update','delete','backend_independence','projects','privacy'], 'synthetic_requests':len(requests),'latency_medians_ms':samples,'cli_peak_working_set_mib':memory_peaks}))
     finally:
         server.shutdown()

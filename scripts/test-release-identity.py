@@ -140,7 +140,7 @@ def run(package, metrics=True):
         db_path = fixture / 'runtime/memory/lucille.sqlite3'
         assert db_path.is_file()
         with closing(sqlite3.connect(db_path)) as db:
-            assert db.execute('pragma user_version').fetchone()[0] == 4
+            assert db.execute('pragma user_version').fetchone()[0] == 5
             assert db.execute('select state from memories').fetchone()[0] == 'candidate'
             assert db.execute("select count(*) from messages").fetchone()[0] == 2
         candidate=mem('list',{'kind':'preference','state':'candidate'})[0]

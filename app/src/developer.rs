@@ -1,6 +1,6 @@
 //! Workspace capabilities, user-only approvals and local task journal.
 use crate::controle::Caminhos;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1233,6 +1233,24 @@ fn inspection(c: &Caminhos, name: &str) -> Result<Value, String> {
     }
     Ok(
         json!({"processes":rows,"limit":100,"scope":"Filhos aprovados e processos com executável/cwd no workspace. Caminhos não acessíveis são omitidos; nenhum argumento, ambiente ou credencial é consultado. Nenhum processo é alterado."}),
+    )
+}
+/// Read-only projection of the existing journal, with no prompts, file content or authority.
+pub fn memory_state(c: &Caminhos, conversation: &str) -> Result<Value, String> {
+    if !load(c).permissions.enabled {
+        return Ok(json!({"enabled":false}));
+    }
+    let db = db(c)?;
+    let task: Option<String> = db
+        .query_row("SELECT state FROM tasks WHERE id=?1", [conversation], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(|_| "Diário indisponível.")?;
+    let mut q=db.prepare("SELECT tool,state,updated FROM operations WHERE task=?1 ORDER BY updated DESC LIMIT 10").map_err(|_|"Diário indisponível.")?;
+    let operations=q.query_map([conversation],|r|Ok(json!({"tool":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"date":r.get::<_,i64>(2)?}))).map_err(|_|"Diário indisponível.")?.collect::<Result<Vec<_>,_>>().map_err(|_|"Diário indisponível.")?;
+    Ok(
+        json!({"untrusted_data":true,"form":"operational","task_state":task,"operations":operations,"authorization":false}),
     )
 }
 pub fn action(c: &Caminhos, action: &str, args: Value) -> Result<Value, String> {

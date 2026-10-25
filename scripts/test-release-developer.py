@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import queue
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -59,6 +60,11 @@ def run(package, real=False):
                 elif n==2:name='workspace_read';args={'path':'calc.py'}
                 elif n==3:name='workspace_patch';args={'path':'calc.py','expected_sha256':json.loads(req['messages'][-1]['content'])['sha256'],'old':'a-b','new':'a+b','reason':'Correct synthetic addition'}
                 elif n==4:name='developer_execute';args={'executable':'python','arguments':['test_calc.py'],'reason':'Run synthetic unit test'}
+                elif n==5:name='memory_inspect'
+                elif n==6:
+                    evidence=json.loads(req['messages'][-1]['content'])['evidence']
+                    if evidence:
+                        item=evidence[0];name='memory_propose';args={'content':item['content'],'source':'developer','evidence_id':item['id'],'category':'experiences'}
             elif mode=='refused':
                 if n<=2:name='workspace_write';args={'path':'refused'+str(n)+'.txt','content':'synthetic','reason':'Synthetic refusal test'}
             elif mode=='malformed':
@@ -145,8 +151,14 @@ def run(package, real=False):
         if not real:
             code,_=ask('Synthetic developer malformed',False);assert code==0
             cfg['max_calls']=5;action('save',cfg);code,_=ask('Synthetic developer loop',False);assert code!=0
-            assert len(requests)==15
+            assert len(requests)==17 if elevated() else len(requests)==18
         history=action('history');assert history['tasks'] and history['operations']
+        with sqlite3.connect(home/'runtime/memory/lucille.sqlite3') as db:
+            evidence=db.execute('select outcome,content from memory_evidence').fetchall()
+            if not elevated():
+                assert evidence and evidence[0][0]=='success'
+                assert all('def add' not in content and 'Ran 1 test' not in content for _,content in evidence)
+                if not real:assert db.execute("select count(*) from memory_labels where category='experiences'").fetchone()[0]>=1
         print(json.dumps({'mode':'real-localhost' if real else 'synthetic-backend','approved_operations':approved_count,'refusal_unchanged':True,'history_persisted':True,'execution':'blocked-elevated' if elevated() else 'passed','requests':len(requests),'private_output_exported':False}))
     finally:
         if server:server.shutdown();server.server_close()
