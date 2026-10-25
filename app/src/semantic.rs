@@ -192,7 +192,7 @@ pub fn tick(c: &Caminhos, cancel: &AtomicBool) -> Result<Value, String> {
         }
     })
 }
-/// Exact cosine scan, bounded to 10,000 rows (~40 MiB for 1024 float dimensions).
+/// Exact cosine scan, bounded to 10,000 rows; only one vector is decoded at a time.
 /// SQLite remains authoritative for scope, approval, expiry and current revision.
 pub(super) fn ranked(
     s: &Store,
@@ -202,19 +202,19 @@ pub(super) fn ranked(
     hybrid: bool,
 ) -> Result<Vec<Value>, String> {
     active::expire(s)?;
-    let mut q=s.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid LEFT JOIN memory_labels l ON l.memory_id=m.id WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) AND (?3 IS NULL OR l.category=?3) ORDER BY bm25(memories_fts),m.importance DESC LIMIT 100").map_err(error)?;
+    let mut q=s.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid LEFT JOIN memory_labels l ON l.memory_id=m.id WHERE memories_fts MATCH ?1 AND m.state='active' AND (m.project_id IS NULL OR m.project_id IS ?2) AND (?3 IS NULL OR coalesce(l.category,CASE m.kind WHEN 'preference' THEN 'preferences' WHEN 'hardware' THEN 'technical_profile' WHEN 'project' THEN 'projects' WHEN 'decision' THEN 'decisions' WHEN 'goal' THEN 'tasks' WHEN 'task' THEN 'tasks' WHEN 'solution' THEN 'knowledge' WHEN 'summary' THEN 'experiences' WHEN 'constraint' THEN 'instructions' ELSE 'user_identity' END)=?3) ORDER BY (bm25(memories_fts)-m.importance*0.25-CASE WHEN m.project_id IS ?2 AND ?2 IS NOT NULL THEN 2 ELSE 0 END-CASE WHEN m.kind IN ('constraint','decision','preference') THEN 0.5 ELSE 0 END-CASE WHEN m.provenance IN ('user','manual') THEN 0.5 ELSE 0 END-1.0/(1.0+max(0,?4-m.updated_at)/86400.0)) ASC LIMIT 100").map_err(error)?;
     let fts = search_terms(query);
     let lexical = if fts.is_empty() {
         vec![]
     } else {
-        q.query_map(params![fts,project,category],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?
+        q.query_map(params![fts,project,category,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?
     };
     let cfg = config(s)?;
     let mut vector = Vec::new();
     if hybrid && cfg.enabled && !has_secret(query) && !private_for_memory(query) {
         // One bounded local query (3s deadline). Provider failure never disables lexical search.
         if let Ok(embedding) = embed(&cfg, query, true) {
-            let mut q=s.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id,v.vector FROM semantic_vectors v JOIN memories m ON m.id=v.memory_id JOIN semantic_queue q ON q.memory_id=m.id LEFT JOIN memory_labels l ON l.memory_id=m.id WHERE m.state='active' AND q.state='ready' AND q.revision=v.revision AND v.model_id=?1 AND v.dimension=?2 AND (m.project_id IS NULL OR m.project_id IS ?3) AND (?4 IS NULL OR l.category=?4) ORDER BY m.id LIMIT 10000").map_err(error)?;
+            let mut q=s.db.prepare("SELECT m.id,m.kind,m.content,m.provenance,m.project_id,v.vector FROM semantic_vectors v JOIN memories m ON m.id=v.memory_id JOIN semantic_queue q ON q.memory_id=m.id LEFT JOIN memory_labels l ON l.memory_id=m.id WHERE m.state='active' AND q.state='ready' AND q.revision=v.revision AND v.model_id=?1 AND v.dimension=?2 AND (m.project_id IS NULL OR m.project_id IS ?3) AND (?4 IS NULL OR coalesce(l.category,CASE m.kind WHEN 'preference' THEN 'preferences' WHEN 'hardware' THEN 'technical_profile' WHEN 'project' THEN 'projects' WHEN 'decision' THEN 'decisions' WHEN 'goal' THEN 'tasks' WHEN 'task' THEN 'tasks' WHEN 'solution' THEN 'knowledge' WHEN 'summary' THEN 'experiences' WHEN 'constraint' THEN 'instructions' ELSE 'user_identity' END)=?4) ORDER BY m.id LIMIT 10000").map_err(error)?;
             let rows=q.query_map(params![cfg.model_id,cfg.dimension as i64,project,category],|r|Ok((json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}),r.get::<_,String>(5)?))).map_err(error)?;
             for row in rows {
                 let (item, raw) = row.map_err(error)?;
@@ -507,6 +507,12 @@ mod tests {
         memory(&mut s, "Synthetic private project dragon", Some(1));
         assert_eq!(ranked(&s, "dragon", None, None, true).unwrap().len(), 1);
         assert_eq!(ranked(&s, "dragon", Some(1), None, true).unwrap().len(), 2);
+        assert_eq!(
+            ranked(&s, "dragon", None, Some("knowledge"), true)
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(ranked(&s, "dragon", None, Some("tasks"), true)
             .unwrap()
             .is_empty());

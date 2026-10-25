@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use controle::{Caminhos, Painel};
 
@@ -489,6 +489,18 @@ fn main() {
             resposta: Mutex::new(None),
             imagem: Mutex::new(None),
         }))
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                let c = window.state::<Ctx>();
+                if let Some(flag) = c.resposta.lock().unwrap().as_ref() {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                vision::cleanup(&c.caminhos, true);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             vision_action,
             painel,

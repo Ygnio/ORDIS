@@ -20,6 +20,8 @@ def run(package):
             if self.path=='/v1/embeddings':
                 vector=([1,0] if any(x in req['input'] for x in ['personagem','RPG']) else [0,1])[:dimension[0]]
                 body=json.dumps({'data':[{'embedding':vector}]}).encode();self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
+            if req.get('max_tokens')==160:
+                assert req.get('temperature')==0 and req.get('chat_template_kwargs',{}).get('enable_thinking') is False
             requests.append(req);self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
             self.wfile.write(('data: '+json.dumps({'choices':[{'delta':{'content':'A red square and a blue circle. Synthetic test.'}}]})+'\n\ndata: '+json.dumps({'choices':[],'usage':{'prompt_tokens':35,'completion_tokens':12,'total_tokens':47}})+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush();self.close_connection=True
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Backend);threading.Thread(target=server.serve_forever,daemon=True).start()

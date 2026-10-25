@@ -38,6 +38,7 @@ class SemanticSchema(unittest.TestCase):
         self.assertEqual(self.db.execute('select count(*) from semantic_vectors').fetchone()[0],0)
     def test_obsolete_excluded(self):
         self.memory();self.ready();self.db.execute("update memories set state='obsolete' where id=1")
+        self.db.execute("insert into memory_labels values(1,'preferences','semantic','[]',null,'human')")
         self.assertEqual(self.db.execute('select state from semantic_queue').fetchone()[0],'excluded')
         self.assertEqual(self.db.execute('select count(*) from semantic_vectors').fetchone()[0],0)
     def test_foreign_key_integrity(self):

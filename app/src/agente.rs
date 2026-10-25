@@ -22,6 +22,8 @@ const CARACTERES_POR_TOKEN: usize = 3;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Mensagem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memoria_origens: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memoria_ids: Vec<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,8 +184,8 @@ fn prompt_sistema(c: &Caminhos) -> Result<String, String> {
 fn conteudo_usuario(c: &Caminhos, texto: &str, imagens: &[String], enviar_imagens: bool) -> Value {
     if !enviar_imagens || imagens.is_empty() {
         let mut t = texto.to_string();
-        for img in imagens {
-            t.push_str(&format!("\n[Imagem anexada anteriormente: {img}]"));
+        for _ in imagens {
+            t.push_str("\n[Imagem anterior não reenviada: consulte retenção, suporte visual e limite de histórico.]");
         }
         return json!(t);
     }
@@ -193,13 +195,15 @@ fn conteudo_usuario(c: &Caminhos, texto: &str, imagens: &[String], enviar_imagen
     for img in imagens {
         if let Ok(url) = crate::vision::data_url(c, Path::new(img)) {
             partes.push(json!({"type": "image_url", "image_url": {"url": url}}));
+        } else {
+            partes.push(json!({"type":"text","text":"[Imagem expirada ou removida; conteúdo indisponível. Não deduza seu conteúdo.]"}));
         }
     }
     json!(partes)
 }
 
 /// Converte a sessão para o formato da API, descartando turnos antigos se o
-/// contexto estimado passar do orçamento. Só imagens do turno atual são enviadas.
+/// contexto textual estimado passar do orçamento. Anexos seguem retenção e limite de histórico.
 fn mensagens_api(
     c: &Caminhos,
     s: &Sessao,
@@ -548,7 +552,7 @@ fn rodar_interno(
             .unwrap_or_default();
         saida.evento(
             "memorias",
-            json!({"ids":memoria_ids,"retrieval_ms":memory_elapsed}),
+            json!({"ids":memoria_ids,"origins":memory.as_ref().map(|m|m["_lucille_sources"].clone()),"retrieval_ms":memory_elapsed}),
         );
         let r = transmitir(c, &mensagens, cancelar, saida)?;
         let chamadas = r.chamadas.clone();
@@ -556,6 +560,7 @@ fn rodar_interno(
             papel: "assistant".into(),
             metricas: Some(r.metricas),
             memoria_ids,
+            memoria_origens: memory.as_ref().map(|m| m["_lucille_sources"].clone()),
             memoria_recuperacao_ms: Some(memory_elapsed),
             texto: r.texto,
             raciocinio: (!r.raciocinio.is_empty()).then_some(r.raciocinio),
@@ -748,9 +753,14 @@ mod metrics_tests {
             papel: "assistant".into(),
             texto: "Resposta sintética".into(),
             metricas: Some(metrics.clone()),
+            memoria_origens: Some(json!({"7":"vector"})),
             ..Default::default()
         });
         salvar(&c, &s).unwrap();
+        assert_eq!(
+            abrir(&c, &s.id).unwrap().mensagens[0].memoria_origens,
+            Some(json!({"7":"vector"}))
+        );
         assert_eq!(
             abrir(&c, &s.id).unwrap().mensagens[0].metricas,
             Some(metrics.clone())

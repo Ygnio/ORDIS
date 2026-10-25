@@ -15,7 +15,8 @@ etapas; a biblioteca de decodificação não é interrompida no meio de uma etap
 Seleção de arquivo, arrastar/soltar e colar usam o mesmo importador. A miniatura
 é removível antes do envio. O servidor precisa anunciar imagens. Os anexos só
 podem ser enviados a endereço loopback literal; o transporte não usa proxies.
-Não se presume igualdade de capacidades entre TabbyAPI e llama.cpp.
+Não se presume igualdade de capacidades entre TabbyAPI e llama.cpp. Em TabbyAPI,
+habilite também Visão na configuração específica do modelo.
 
 Captura abre o seletor nativo `ms-screenclip:` do Windows, após confirmação.
 Selecione uma região/janela, cole com Ctrl+V, revise a miniatura e envie.
@@ -25,8 +26,9 @@ da Ferramenta de Captura deve ser verificada na instalação do Windows 10.
 
 Anexos ficam junto ao perfil privado, em `runtime/memory/vision`, nunca no
 workspace de código. JSON de conversa guarda referências, sem Base64. Retenção
-padrão 0 apaga anexos na próxima abertura do aplicativo, inclusive após falha.
-Pode-se escolher 1–30 dias. Expiração é aplicada na leitura, importação e abertura.
+padrão 0 apaga anexos no fechamento normal e na próxima abertura do aplicativo,
+inclusive após falha.
+Pode-se escolher 1–30 dias. Expiração é aplicada na leitura, importação, fechamento e abertura.
 Referências históricas expiradas ficam indisponíveis; não se inventa seu conteúdo.
 Mensagens anteriores com anexos retidos podem voltar ao contexto, com limite
 configurável de 0–8 mensagens anteriores, além da mensagem atual. Imagens geradas
@@ -39,6 +41,8 @@ excessivo: 65.536 tokens configurados não certificam capacidade multimodal plen
 O diagnóstico diferencia capacidade anunciada de teste sintético confirmado.
 “Testar com imagem sintética” envia somente formas geométricas conhecidas; exige
 resposta com cores/formas corretas e salva apenas metadados/tempos privados.
+Somente essa requisição sintética usa temperatura zero e enable_thinking=false;
+conversas normais preservam suas preferências de raciocínio.
 Não estima VRAM, projetor ou tempo exclusivo do encoder sem telemetria confiável.
 Troca de pesos sob mesmo alias exige novo teste. A auditoria externa do servidor
 complementa esse diagnóstico.
@@ -95,7 +99,9 @@ Durante geração, worker pausa; cancelamento descarta o resultado antes do comm
 
 Consulta usa cosseno exato, até 10.000 memórias, sem extensão nativa/ANN. Combina
 top 100 lexical e top 100 vetorial por RRF (k=60), limiar de cosseno 0,25, IDs
-deduplicados, fontes `lexical`, `vector` ou `both`. Categorias/projetos, estado
+deduplicados, fontes `lexical`, `vector` ou `both`. Preferências/instruções
+duradouras incluídas pela prioridade anterior usam `contextual` quando não
+correspondem à busca. A origem persiste no histórico de cada resposta. Categorias/projetos, estado
 confirmado e validade são filtrados antes da fusão. O orçamento e o invólucro
 de dados não confiáveis são preservados. A busca atual faz uma chamada local
 limitada a 3s durante a recuperação e pode aumentar TTFT; não confundir essa
@@ -141,5 +147,7 @@ CI executa GNU original, MSVC separado, Python, JavaScript, Gitleaks e guardas d
 privacidade, incluindo aceitação em binários empacotados. Somente fixtures sintéticos.
 Resultados completos, medidas e pendências ficam no relatório de entrega/PR.
 
-Referências primárias: [llama.cpp servidor](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md),
+Referências primárias: [llama.cpp servidor na revisão auditada](https://github.com/ggml-org/llama.cpp/blob/a894dae93/tools/server/README.md),
 [multimodal](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md).
+
+Especificação do prefixo e dimensões: [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B).

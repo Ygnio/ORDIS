@@ -591,6 +591,25 @@ pub fn chat(
     run_async(chat_async(base, key, body, cancel, emit))
 }
 
+/// Deterministic synthetic diagnostic only. Does not change server or chat preferences.
+pub fn vision_probe(c: &Caminhos, messages: &[Value]) -> Result<ChatResponse, String> {
+    let (base, key) = active_endpoint(c);
+    let u = url::Url::parse(&base).map_err(|_| "Endpoint inválido.")?;
+    if !matches!(u.host_str(), Some("127.0.0.1" | "[::1]")) {
+        return Err("Diagnóstico visual exige loopback literal.".into());
+    }
+    let mut body = request_body(&selected_model(c)?, messages, Some(160));
+    body["temperature"] = json!(0);
+    body["chat_template_kwargs"] = json!({"enable_thinking":false});
+    run_async(chat_async(
+        base,
+        key,
+        body,
+        &AtomicBool::new(false),
+        &|_, _| {},
+    ))
+}
+
 fn request_body(model: &str, messages: &[Value], max_tokens: Option<u32>) -> Value {
     let mut body = json!({"model": model, "messages": messages, "stream": true, "stream_options":{"include_usage":true}});
     if let Some(max_tokens) = max_tokens {

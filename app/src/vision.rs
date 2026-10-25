@@ -33,10 +33,22 @@ impl Default for Config {
     }
 }
 fn private_root(c: &Caminhos) -> Result<PathBuf, String> {
-    Ok(crate::memory::database_path(c)?
-        .parent()
-        .ok_or("Pasta privada inválida.")?
-        .join("vision"))
+    let db = crate::memory::database_path(c)?;
+    let parent = db.parent().ok_or("Pasta privada inválida.")?;
+    let root = parent.join("vision");
+    if root.exists()
+        && !root
+            .canonicalize()
+            .map_err(|_| "Pasta privada inválida.")?
+            .starts_with(
+                parent
+                    .canonicalize()
+                    .map_err(|_| "Pasta privada inválida.")?,
+            )
+    {
+        return Err("A pasta de anexos aponta para fora do perfil privado.".into());
+    }
+    Ok(root)
 }
 pub fn config(c: &Caminhos) -> Config {
     private_root(c)
@@ -169,6 +181,7 @@ pub fn save_batch(
             )
             .map_err(|_| "Falha ao salvar retenção.")?;
         }
+        cancelled(cancel)?;
         Ok(paths.clone())
     })();
     if result.is_err() {
@@ -197,7 +210,7 @@ pub fn cleanup(c: &Caminhos, startup: bool) {
                     .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
                     .and_then(|v| v["expires"].as_i64());
                 if expires.is_none_or(|t| {
-                    t > 0 && t <= chrono::Utc::now().timestamp() || t == 0 && startup
+                    t < 0 || t > 0 && t <= chrono::Utc::now().timestamp() || t == 0 && startup
                 }) {
                     remove(&[p.display().to_string()]);
                 }
@@ -221,7 +234,7 @@ pub fn data_url(c: &Caminhos, path: &Path) -> Result<String, String> {
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .and_then(|v| v["expires"].as_i64())
         .ok_or("Retenção inválida.")?;
-    if expires > 0 && expires <= chrono::Utc::now().timestamp() {
+    if expires < 0 || expires > 0 && expires <= chrono::Utc::now().timestamp() {
         return Err("Anexo expirado.".into());
     }
     let meta = fs::metadata(&actual).map_err(|_| "Anexo indisponível.")?;
@@ -270,14 +283,7 @@ pub fn action(c: &Caminhos, name: &str, args: Value) -> Result<Value, String> {
             let messages = vec![
                 json!({"role":"user","content":[{"type":"text","text":"Describe the colors and shapes in this image in English. Be brief."},{"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}",B64.encode(png.into_inner()))}}]}),
             ];
-            let result = crate::backends::chat(
-                c,
-                &messages,
-                Some(120),
-                &[],
-                &AtomicBool::new(false),
-                &|_, _| {},
-            )?;
+            let result = crate::backends::vision_probe(c, &messages)?;
             let text = result.text.to_lowercase();
             let confirmed = ["red", "blue", "square", "circle"]
                 .iter()
@@ -290,7 +296,7 @@ pub fn action(c: &Caminhos, name: &str, args: Value) -> Result<Value, String> {
             Ok(report)
         }
         "capture" => {
-            if !config(c).screenshot {
+            if !config(c).enabled || !config(c).screenshot {
                 return Err("Habilite captura de tela nas configurações de Visão.".into());
             }
             // Windows' own picker requires a deliberate selection. Clipboard is only read by
@@ -327,7 +333,7 @@ pub fn action(c: &Caminhos, name: &str, args: Value) -> Result<Value, String> {
                 });
             let confirmed = previous.as_ref().is_some_and(|v| v["confirmed"] == true);
             Ok(
-                json!({"backend":s.backend,"model":s.model,"image_support":if confirmed{"confirmed_by_synthetic_probe"}else if s.capabilities.image_input{"advertised_not_yet_verified"}else if s.capabilities.image_input_advertised==Some(false){"unavailable"}else{"unknown"},"previous_probe":previous,"projector":"not_verified","formats":["PNG","JPEG","WebP"],"metadata":"stripped_on_import","context":s.context_tokens,"vram_impact":null,"visual_processing_ms":null,"note":"Uma troca de pesos usando o mesmo alias exige novo teste. Uso de contexto vem do backend, sem custo fixo por imagem."}),
+                json!({"backend":s.backend,"model":s.model,"image_support":if confirmed{"confirmed_by_synthetic_probe"}else if s.capabilities.image_input{"configured_or_advertised_not_yet_verified"}else if s.capabilities.image_input_advertised==Some(false){"unavailable"}else{"unknown"},"previous_probe":previous,"image_configured":s.capabilities.image_input_configured,"image_advertised":s.capabilities.image_input_advertised,"projector":"not_verified","formats":["PNG","JPEG","WebP"],"metadata":"stripped_on_import","context":s.context_tokens,"vram_impact":null,"visual_processing_ms":null,"note":"Uma troca de pesos usando o mesmo alias exige novo teste. Uso de contexto vem do backend, sem custo fixo por imagem."}),
             )
         }
         _ => Err("Ação de visão inválida.".into()),
@@ -345,7 +351,7 @@ mod tests {
     }
     #[test]
     fn png_jpeg_and_metadata() {
-        for f in [ImageFormat::Png, ImageFormat::Jpeg] {
+        for f in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
             let b = process(&picture(f), &Config::default(), &AtomicBool::new(false)).unwrap();
             assert_eq!(image::guess_format(&b).unwrap(), ImageFormat::Png);
         }
@@ -424,5 +430,18 @@ mod tests {
             &AtomicBool::new(false)
         )
         .is_err());
+    }
+    #[test]
+    fn jpeg_orientation_is_applied_and_exif_removed() {
+        let original = picture(ImageFormat::Jpeg);
+        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+        jpeg.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        jpeg.extend_from_slice(exif);
+        jpeg.extend_from_slice(&original[2..]);
+        let out = process(&jpeg, &Config::default(), &AtomicBool::new(false)).unwrap();
+        let im = image::load_from_memory(&out).unwrap();
+        assert_eq!((im.width(), im.height()), (10, 20));
+        assert!(!out.windows(4).any(|w| w == b"Exif"));
     }
 }

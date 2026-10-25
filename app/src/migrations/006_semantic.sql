@@ -21,9 +21,9 @@ CREATE TRIGGER semantic_update AFTER UPDATE OF content,kind,state,project_id,imp
 END;
 CREATE TRIGGER semantic_labels_insert AFTER INSERT ON memory_labels BEGIN
  DELETE FROM semantic_vectors WHERE memory_id=NEW.memory_id;
- UPDATE semantic_queue SET revision=revision+1,state='pending',attempts=0,error=NULL,retry_at=0 WHERE memory_id=NEW.memory_id;
+ UPDATE semantic_queue SET revision=revision+1,state=CASE WHEN (SELECT state FROM memories WHERE id=NEW.memory_id)='active' THEN 'pending' ELSE 'excluded' END,attempts=0,error=NULL,retry_at=0 WHERE memory_id=NEW.memory_id;
 END;
 CREATE TRIGGER semantic_labels_update AFTER UPDATE ON memory_labels BEGIN
  DELETE FROM semantic_vectors WHERE memory_id=NEW.memory_id;
- UPDATE semantic_queue SET revision=revision+1,state='pending',attempts=0,error=NULL,retry_at=0 WHERE memory_id=NEW.memory_id;
+ UPDATE semantic_queue SET revision=revision+1,state=CASE WHEN (SELECT state FROM memories WHERE id=NEW.memory_id)='active' THEN 'pending' ELSE 'excluded' END,attempts=0,error=NULL,retry_at=0 WHERE memory_id=NEW.memory_id;
 END;

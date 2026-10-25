@@ -724,7 +724,6 @@ impl Store {
             )?;
             return Ok(None);
         }
-        let fts = search_terms(query);
         let project_id: Option<i64> = self
             .db
             .query_row(
@@ -752,8 +751,13 @@ impl Store {
         let mut preferences=self.db.prepare("SELECT id,kind,content,provenance,project_id FROM memories WHERE state='active' AND kind IN ('preference','constraint') AND (project_id IS NULL OR project_id IS ?1) ORDER BY importance DESC,updated_at DESC LIMIT 20").map_err(error)?;
         let durable=preferences.query_map([project_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"type":r.get::<_,String>(1)?,"data":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"project":r.get::<_,Option<i64>>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
         let mut merged = durable;
+        for row in &mut merged {
+            row["retrieval"] = json!("contextual");
+        }
         for row in rows {
-            if !merged.iter().any(|v| v["id"] == row["id"]) {
+            if let Some(existing) = merged.iter_mut().find(|v| v["id"] == row["id"]) {
+                existing["retrieval"] = row["retrieval"].clone();
+            } else {
                 merged.push(row);
             }
         }
@@ -763,6 +767,21 @@ impl Store {
         self.db.execute("DELETE FROM retrieval_audit WHERE id NOT IN (SELECT id FROM retrieval_audit ORDER BY id DESC LIMIT 1000)",[]).map_err(error)?;
         if let Some(v) = context.as_mut() {
             v["_lucille_ids"] = json!(ids);
+            let sources: serde_json::Map<String, Value> = rows
+                .iter()
+                .filter(|r| r["id"].as_i64().is_some_and(|id| ids.contains(&id)))
+                .map(|r| {
+                    (
+                        r["id"].as_i64().unwrap().to_string(),
+                        if r["retrieval"].is_string() {
+                            r["retrieval"].clone()
+                        } else {
+                            json!("contextual")
+                        },
+                    )
+                })
+                .collect();
+            v["_lucille_sources"] = json!(sources);
         }
         self.event(
             if ids.is_empty() {
