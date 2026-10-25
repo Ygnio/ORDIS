@@ -41,6 +41,7 @@ agente/workspace/AGENTS.local.md
 
 # Compilação e app instalado
 app/target/
+tests/generation-harness/target/
 app/gen/
 /bin/
 
@@ -73,3 +74,33 @@ vector-index/
 *.hnsw
 *.npy
 *.npz
+
+# Pacotes, modelos e perfis locais nunca pertencem ao código-fonte.
+*.exe
+*.dll
+*.zip
+*.gguf
+*.exl3
+*.safetensors
+*.onnx
+*.ckpt
+*.pth
+*.pt
+*.dpapi
+*.pem
+*.pfx
+*.key
+*.sqlite-journal
+*.wal
+*.shm
+target/
+node_modules/
+.venv/
+venv/
+qa-local/
+webview2/
+EBWebView/
+/interface/
+api_tokens.yml
+*.p12
+*.bak

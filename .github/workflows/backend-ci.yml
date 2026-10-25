@@ -79,8 +79,20 @@ jobs:
 
       - name: Check formatting of changed Rust modules
         shell: pwsh
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --config skip_children=true --check app/src/backends.rs app/src/settings.rs app/src/diagnostics.rs app/src/controle.rs app/src/ferramentas.rs app/src/imagens.rs app/src/main.rs app/src/modelos.rs app/src/bin/ordis-cli.rs app/src/agente.rs app/src/memory.rs app/src/memory_tests.rs app/src/response_metrics.rs app/src/identity.rs app/src/developer.rs app/src/developer_runner.rs app/src/developer_tests.rs app/src/active_memory.rs app/src/active_memory_tests.rs app/src/semantic.rs app/src/vision.rs
+          $base = $env:CI_BASE_SHA
+          if ($base -notmatch '^(?!0{40}$)[0-9a-f]{40}$') {
+            $base = git merge-base HEAD origin/main
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $changed = @(git -c core.quotepath=false diff --name-only --diff-filter=ACMR "$base...HEAD" -- '*.rs')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($file in $changed) {
+            rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --config skip_children=true --check $file
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Check JavaScript syntax
         shell: pwsh
@@ -89,13 +101,8 @@ jobs:
             node --check $_.FullName
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          node --test scripts/test-backend-ui.cjs
-          node --test scripts/test-memory-ui.cjs
-          node --test scripts/test-response-metrics.cjs
-          node --test scripts/test-identity-ui.cjs
-          node --test scripts/test-developer-ui.cjs
-          node --test scripts/test-active-memory-ui.cjs
-          node --test scripts/test-semantic-vision-ui.cjs
+          node --test scripts/test-*.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Python tests
         shell: pwsh
@@ -121,6 +128,10 @@ jobs:
           cargo +stable-x86_64-pc-windows-gnu build --release --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Validate generation completion and tool rejection against mocks
+        shell: pwsh
+        run: python -B scripts/test-generation-integration.py --cli app/target/release/ordis-cli.exe
+
       - name: Assemble privacy-safe test ZIP
         shell: pwsh
         run: |
@@ -139,7 +150,7 @@ jobs:
           Copy-Item config/paths.json, config/tabbyapi-inicial.yml, config/ordis_qwen_thinking.yml, config/runtime-packages.txt, config/images-requirements.lock.txt, config/README.md (Join-Path $stage 'config')
           Copy-Item scripts/serve_inference.py, scripts/service_shutdown.py, scripts/agent_web_search.py, scripts/ordis_token_monitor.py, scripts/token_counter_paths.py (Join-Path $stage 'scripts')
           Copy-Item agente/workspace/AGENTS.md (Join-Path $stage 'agente/workspace/AGENTS.md')
-          Copy-Item docs/LLAMA-CPP-GGUF.md, docs/TESTE-WINDOWS-LLAMA-CPP.md, docs/FASE-2-CONFIGURACOES.md, docs/FASE-3-MEMORIA.md, docs/FASE-3-METRICAS.md, docs/FASE-3-1-IDENTIDADE.md, docs/FASE-3-2-CONFIABILIDADE.md, docs/FASE-4-1-DESENVOLVEDOR.md, docs/FASE-3-3-MEMORIA-ATIVA.md, docs/FASE-3-4-SEMANTICA-VISAO.md (Join-Path $stage 'docs')
+          Copy-Item docs/GENERATION-SAFETY.md, docs/LLAMA-CPP-GGUF.md, docs/TESTE-WINDOWS-LLAMA-CPP.md, docs/FASE-2-CONFIGURACOES.md, docs/FASE-3-MEMORIA.md, docs/FASE-3-METRICAS.md, docs/FASE-3-1-IDENTIDADE.md, docs/FASE-3-2-CONFIABILIDADE.md, docs/FASE-4-1-DESENVOLVEDOR.md, docs/FASE-3-3-MEMORIA-ATIVA.md, docs/FASE-3-4-SEMANTICA-VISAO.md (Join-Path $stage 'docs')
           Copy-Item scripts/Iniciar-ORDIS-Teste.ps1 (Join-Path $stage 'Iniciar-ORDIS-Teste.ps1')
           $forbidden = Get-ChildItem $stage -Recurse -File | Where-Object {
             $_.Extension -match '^\.(gguf|exl3|safetensors|dpapi|sqlite|sqlite3|db|wal|shm|pem|p12|pfx|key|log)$' -or

@@ -8,7 +8,8 @@ def forbidden(path):
     path=path.replace('\\','/')
     if re.search(r'\.(png|jpe?g|webp|gif|bmp|tiff?)$',path,re.I) and path != 'app/ui/ordis.png': return True
     return bool(re.search(r'(^|/)(runtime|target|node_modules|__pycache__|private|profiles|prompts-private|backups|exports|technical-reports|pending-records|developer-data|memories|memorias|embeddings|attachments|screenshots|captures|vectors|vector-index)(/|$)',path,re.I)
-      or re.search(r'\.(sqlite3?|db)(-(wal|shm|journal))?$|\.(dpapi|log|gguf|pem|pfx|key|backup|bak|f32|fvecs|hnsw|index|npy|npz)$',path,re.I)
+      or re.search(r'(^|/)(qa-local|webview2|EBWebView|interface|\.venv|venv)(/|$)',path,re.I)
+      or re.search(r'\.(sqlite3?|db)(-(wal|shm|journal))?$|\.(dpapi|log|gguf|exl3|safetensors|onnx|ckpt|pth|pt|exe|dll|zip|wal|shm|pem|p12|pfx|key|backup|bak|f32|fvecs|hnsw|index|npy|npz)$',path,re.I)
       or re.search(r'(^|/)(technical-memory-report[^/]*\.json|AGENTS\.local\.md|developer-config\.json|developer-state[^/]*|identity(-profile)?\.json|personality\.private\.md|system-prompt\.private\.(txt|md)|\.env(\..*)?|api_tokens\.yml)$',path,re.I))
 
 def private_structure(value,depth=0):
@@ -32,7 +33,7 @@ def private_content(path):
     try:
         with p.open('rb') as f:
             header=f.read(512)
-            if header.startswith(b'SQLite format 3\0'):return True
+            if header.startswith((b'SQLite format 3\0',b'GGUF',b'MZ',b'PK\x03\x04')):return True
             image=header.startswith((b'\x89PNG\r\n\x1a\n',b'\xff\xd8\xff',b'GIF87a',b'GIF89a')) or header[:4]==b'RIFF' and header[8:12]==b'WEBP'
             if image and p.as_posix()!='app/ui/ordis.png':return True
             start=header.lstrip(b'\xef\xbb\xbf \r\n\t')
@@ -45,7 +46,13 @@ def private_content(path):
     return False
 
 if __name__=='__main__':
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--include-untracked',action='store_true',help='Also scan files eligible for a future commit, before staging.')
+    args=parser.parse_args()
     files=subprocess.check_output(['git','ls-files','-z']).decode().split('\0')
+    if args.include_untracked:
+        files+=subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z']).decode().split('\0')
     rejected=[p for p in files if p and (forbidden(p) or private_content(p))]
     if rejected:
         raise SystemExit('Private/generated tracked paths rejected:\n'+'\n'.join(rejected))
