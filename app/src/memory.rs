@@ -1763,7 +1763,9 @@ pub fn idle_tick(c: &Caminhos) -> Result<(), String> {
     }
     let path = database_path(c)?;
     if path.exists() {
-        let _ = semantic::tick(c, &STOP_CONSOLIDATION);
+        // Consolidation cancellation must not permanently pause the independent index.
+        // Disabling embeddings cancels its pending commit through the config check.
+        let _ = semantic::tick(c, &AtomicBool::new(false));
     }
     {
         let Ok(_guard) = ACCESS.try_lock() else {

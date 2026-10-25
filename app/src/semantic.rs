@@ -338,6 +338,19 @@ fn reindex(s: &Store) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn cancelled_index_never_opens_a_profile() {
+        let root = std::env::temp_dir().join(format!(
+            "semantic-cancel-synthetic-{}",
+            crate::controle::sufixo_unico()
+        ));
+        let c = Caminhos {
+            projeto: root.clone(),
+            runtime: root.join("runtime"),
+        };
+        assert_eq!(tick(&c, &AtomicBool::new(true)).unwrap()["paused"], true);
+        assert!(!root.exists());
+    }
+    #[test]
     fn vectors_validate() {
         assert!(unit(vec![1.0], 2).is_err());
         assert!(unit(vec![f32::NAN], 1).is_err());
