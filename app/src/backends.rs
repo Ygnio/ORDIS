@@ -254,22 +254,30 @@ pub(crate) fn normalize_base(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-fn client(timeout: Duration) -> Result<reqwest::Client, String> {
+fn loopback(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .is_some_and(|u| matches!(u.host_str(), Some("127.0.0.1" | "[::1]" | "localhost")))
+}
+fn client(timeout: Duration, endpoint: &str) -> Result<reqwest::Client, String> {
     static TLS_PROVIDER: OnceLock<()> = OnceLock::new();
     TLS_PROVIDER.get_or_init(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
-    reqwest::Client::builder()
-        .no_proxy()
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    if loopback(endpoint) {
+        builder = builder.no_proxy();
+    }
+    builder
         .build()
         .map_err(|e| format!("Falha ao configurar cliente HTTP: {e}"))
 }
 
 async fn get_json(url: &str, key: Option<&str>, timeout: Duration) -> Result<Value, String> {
-    let c = client(timeout)?;
+    let c = client(timeout, url)?;
     let mut req = c.get(url);
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(k);
@@ -326,7 +334,7 @@ pub async fn check_llama(url: &str, key: Option<&str>) -> Result<BackendStatus, 
     let props = get_json(&format!("{base}/props"), key, Duration::from_secs(2))
         .await
         .ok();
-    let mut metrics_request = client(Duration::from_secs(2))?.get(format!("{base}/metrics"));
+    let mut metrics_request = client(Duration::from_secs(2), base)?.get(format!("{base}/metrics"));
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         metrics_request = metrics_request.bearer_auth(k);
     }
@@ -670,7 +678,7 @@ async fn chat_async(
             metrics,
         });
     }
-    let c = client(Duration::from_secs(900))?;
+    let c = client(Duration::from_secs(900), &base)?;
     let mut req = c
         .post(format!("{}/v1/chat/completions", base.trim_end_matches('/')).as_str())
         .json(&body);
