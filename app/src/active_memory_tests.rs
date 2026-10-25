@@ -1,5 +1,17 @@
 use super::*;
 #[test]
+fn failed_human_audit_rolls_back_policy_change() {
+    let mut s = Fixture::new();
+    s.db.execute_batch("CREATE TRIGGER synthetic_audit_failure BEFORE INSERT ON learning_audit BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
+    assert!(action(
+        &mut s,
+        "learning_save",
+        &json!({"mode":"controlled","categories":["projects"]})
+    )
+    .is_err());
+    assert_eq!(policy(&s).unwrap().mode, "manual");
+}
+#[test]
 fn similarity_does_not_merge_changed_facts_or_numbers() {
     assert!(similar(
         "Prefiro respostas sintéticas bastante curtas.",
@@ -202,6 +214,12 @@ fn update_keeps_versions_and_requires_human() {
     approve(&mut s, next, true).unwrap();
     assert_eq!(one(&s, old).unwrap().state, "obsolete");
     assert_eq!(one(&s, next).unwrap().state, "active");
+    let history = action(&mut s, "versions", &json!({"id":next})).unwrap();
+    assert!(history
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["content"] == "Projeto: Aurora sintético" && v["memory_id"] == old));
     assert!(
         action(&mut s, "versions", &json!({"id":old}))
             .unwrap()

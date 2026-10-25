@@ -620,6 +620,18 @@ pub fn before_delete(s: &Store, id: i64) -> Result<(), String> {
     Ok(())
 }
 pub fn action(s: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
+    s.db.execute_batch("SAVEPOINT human_memory_review")
+        .map_err(error)?;
+    let result = action_inner(s, name, args);
+    s.db.execute_batch(if result.is_ok() {
+        "RELEASE human_memory_review"
+    } else {
+        "ROLLBACK TO human_memory_review; RELEASE human_memory_review"
+    })
+    .map_err(error)?;
+    result
+}
+fn action_inner(s: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
     expire(s)?;
     match name {
         "active_get" => {
@@ -687,8 +699,8 @@ pub fn action(s: &mut Store, name: &str, args: &Value) -> Result<Value, String> 
         }
         "versions" => {
             let id = args["id"].as_i64().ok_or("ID inválido.")?;
-            let mut q=s.db.prepare("SELECT content,kind,state,created_at FROM memory_versions WHERE memory_id=?1 ORDER BY id DESC LIMIT 50").map_err(error)?;
-            let rows=q.query_map([id],|r|Ok(json!({"content":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"date":r.get::<_,i64>(3)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
+            let mut q=s.db.prepare("WITH RECURSIVE lineage(id) AS (SELECT ?1 UNION SELECT r.target FROM memory_requests r JOIN lineage l ON r.candidate=l.id WHERE r.operation='update' AND r.state='approved') SELECT v.content,v.kind,v.state,v.created_at,v.memory_id FROM memory_versions v JOIN lineage l ON l.id=v.memory_id ORDER BY v.id DESC LIMIT 50").map_err(error)?;
+            let rows=q.query_map([id],|r|Ok(json!({"content":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"date":r.get::<_,i64>(3)?,"memory_id":r.get::<_,i64>(4)?}))).map_err(error)?.collect::<Result<Vec<_>,_>>().map_err(error)?;
             Ok(json!(rows))
         }
         "requests" => {
