@@ -254,21 +254,30 @@ pub(crate) fn normalize_base(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-fn client(timeout: Duration) -> Result<reqwest::Client, String> {
+fn loopback(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .is_some_and(|u| matches!(u.host_str(), Some("127.0.0.1" | "[::1]" | "localhost")))
+}
+fn client(timeout: Duration, endpoint: &str) -> Result<reqwest::Client, String> {
     static TLS_PROVIDER: OnceLock<()> = OnceLock::new();
     TLS_PROVIDER.get_or_init(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
-    reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    if loopback(endpoint) {
+        builder = builder.no_proxy();
+    }
+    builder
         .build()
         .map_err(|e| format!("Falha ao configurar cliente HTTP: {e}"))
 }
 
 async fn get_json(url: &str, key: Option<&str>, timeout: Duration) -> Result<Value, String> {
-    let c = client(timeout)?;
+    let c = client(timeout, url)?;
     let mut req = c.get(url);
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(k);
@@ -325,7 +334,7 @@ pub async fn check_llama(url: &str, key: Option<&str>) -> Result<BackendStatus, 
     let props = get_json(&format!("{base}/props"), key, Duration::from_secs(2))
         .await
         .ok();
-    let mut metrics_request = client(Duration::from_secs(2))?.get(format!("{base}/metrics"));
+    let mut metrics_request = client(Duration::from_secs(2), &base)?.get(format!("{base}/metrics"));
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         metrics_request = metrics_request.bearer_auth(k);
     }
@@ -571,12 +580,42 @@ pub fn chat(
     emit: &dyn Fn(&str, Value),
 ) -> Result<ChatResponse, String> {
     let (base, key) = active_endpoint(c);
+    let contains_images = messages.iter().any(|m| {
+        m["content"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|p| p["type"] == "image_url"))
+    });
+    if contains_images {
+        let u = url::Url::parse(&base).map_err(|_| "Endpoint inválido.")?;
+        if !matches!(u.host_str(), Some("127.0.0.1" | "[::1]")) {
+            return Err("Imagens só podem ser enviadas a loopback literal local.".into());
+        }
+    }
     let model = selected_model(c)?;
     let mut body = request_body(&model, messages, max_tokens);
     if !tools.is_empty() && active_capabilities(c).tools {
         body["tools"] = json!(tools);
     }
     run_async(chat_async(base, key, body, cancel, emit))
+}
+
+/// Deterministic synthetic diagnostic only. Does not change server or chat preferences.
+pub fn vision_probe(c: &Caminhos, messages: &[Value]) -> Result<ChatResponse, String> {
+    let (base, key) = active_endpoint(c);
+    let u = url::Url::parse(&base).map_err(|_| "Endpoint inválido.")?;
+    if !matches!(u.host_str(), Some("127.0.0.1" | "[::1]")) {
+        return Err("Diagnóstico visual exige loopback literal.".into());
+    }
+    let mut body = request_body(&selected_model(c)?, messages, Some(160));
+    body["temperature"] = json!(0);
+    body["chat_template_kwargs"] = json!({"enable_thinking":false});
+    run_async(chat_async(
+        base,
+        key,
+        body,
+        &AtomicBool::new(false),
+        &|_, _| {},
+    ))
 }
 
 fn request_body(model: &str, messages: &[Value], max_tokens: Option<u32>) -> Value {
@@ -639,7 +678,7 @@ async fn chat_async(
             metrics,
         });
     }
-    let c = client(Duration::from_secs(900))?;
+    let c = client(Duration::from_secs(900), &base)?;
     let mut req = c
         .post(format!("{}/v1/chat/completions", base.trim_end_matches('/')).as_str())
         .json(&body);
@@ -662,12 +701,10 @@ async fn chat_async(
     };
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
         emit("metricas", json!(metrics.snapshot("interrupted")));
         return Err(format!(
-            "Backend recusou o pedido (HTTP {}): {}",
-            status.as_u16(),
-            body.chars().take(400).collect::<String>()
+            "Backend recusou o pedido (HTTP {}). Verifique compatibilidade, contexto e diagnóstico local; o corpo da resposta foi omitido para proteger anexos e conteúdo privado.",
+            status.as_u16()
         ));
     }
     let mut stream = response.bytes_stream();

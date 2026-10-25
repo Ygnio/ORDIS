@@ -1,4 +1,19 @@
 use super::*;
+#[test]
+fn retrieval_source_metadata_survives_contextual_preference_priority() {
+    let mut s = Fixture::new();
+    let mut input = input("Synthetic preference about dragons.");
+    input.kind = "preference".into();
+    input.state = "active".into();
+    let id = s.put(None, &input, "manual", None).unwrap();
+    let context = s
+        .retrieve("spaceship", "synthetic-sources")
+        .unwrap()
+        .unwrap();
+    assert_eq!(context["_lucille_sources"][id.to_string()], "contextual");
+    let context = s.retrieve("dragons", "synthetic-sources").unwrap().unwrap();
+    assert_eq!(context["_lucille_sources"][id.to_string()], "lexical");
+}
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicUsize;
 static COUNTER: AtomicUsize = AtomicUsize::new(0);

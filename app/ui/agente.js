@@ -157,11 +157,11 @@
     else if (imagens && imagens.length) grupoImagens(imagens, d.querySelector('.conteudo'));
   }
 
-  function usedMemories(ids,ms) {
+  function usedMemories(ids,ms,origins) {
     ids=ids||[];if(!ids.length&&typeof ms!=="number")return;
     const d=el('details','response-memory');d.append(el('summary','',`Memórias utilizadas: ${ids.length?ids.map(id=>'#'+id).join(', '):'nenhuma selecionada'}${typeof ms==='number'?' · '+ms.toLocaleString('pt-BR',{maximumFractionDigits:2})+' ms recuperação local':''}`));
     const content=el('div');d.append(content);let loading=false;
-    d.addEventListener('toggle',async()=>{if(!d.open||loading)return;loading=true;try{const rows=await invoke('memory_action',{action:'used',args:{ids}});content.replaceChildren();for(const row of rows)content.append(el('p','',`#${row.id} · ${row.kind} · ${row.state}: ${row.content}`));if(rows.length<ids.length)content.append(el('p','','Algumas referências foram excluídas e seu conteúdo não é exibido.'));}catch(_){content.textContent='Memória local indisponível.';}finally{loading=false;}});
+    d.addEventListener('toggle',async()=>{if(!d.open||loading)return;loading=true;try{const rows=await invoke('memory_action',{action:'used',args:{ids}});content.replaceChildren();for(const row of rows)content.append(el('p','',`#${row.id} · ${{lexical:"lexical",vector:"vetorial",both:"lexical + vetorial",contextual:"prioridade contextual"}[origins?.[String(row.id)]] || "origem não registrada"} · ${row.kind} · ${row.state}: ${row.content}`));if(rows.length<ids.length)content.append(el('p','','Algumas referências foram excluídas e seu conteúdo não é exibido.'));}catch(_){content.textContent='Memória local indisponível.';}finally{loading=false;}});
     bloco?.append(d);
   }
 
@@ -188,7 +188,7 @@
           bloco.textos.push(m.texto);
         }
         (m.chamadas || []).forEach((ch) => bloco.append(detalhesFerramenta(ch)));
-        usedMemories(m.memoria_ids,m.memoria_recuperacao_ms);
+        usedMemories(m.memoria_ids,m.memoria_recuperacao_ms,m.memoria_origens);
         if (m.metricas) window.ordisResponseMetrics.mount(bloco, m.metricas);
       } else if (m.papel === 'tool' && bloco) {
         preencherResultado(bloco, m.id_chamada, m.texto, m.erro, m.imagens || []);
@@ -558,7 +558,7 @@
         if (segmento.raciocinio.open) rolar(false);
         break;
       case 'memorias':
-        usedMemories(d.ids,d.retrieval_ms);
+        usedMemories(d.ids,d.retrieval_ms,d.origins);
         break;
       case 'memory_change':
         if (d.review_required || d.state === 'awaiting_human_confirmation') estado('Memória aguardando revisão na página Memória.');
@@ -636,13 +636,17 @@
 
   function lerArquivos(arquivos) {
     for (const f of arquivos) {
-      if (!f.type.startsWith('image/')) continue;
-      if (f.size > 15 * 1024 * 1024) {
-        avisar(`${f.name} passa de 15 MB.`, true);
+      const cfg = window.LucilleVision?.getConfig();
+      if (!cfg?.enabled) { avisar('Habilite imagens nas configurações de Visão.', true); return; }
+      if (!['image/png','image/jpeg','image/webp'].includes(f.type)) { avisar('Use PNG, JPEG ou WebP.', true); continue; }
+      if (anexos.length >= 4) { avisar('Até quatro imagens por mensagem.', true); break; }
+      if (f.size > cfg.max_mb * 1024 * 1024) {
+        avisar(`${f.name} passa de ${cfg.max_mb} MiB.`, true);
         continue;
       }
       const leitor = new FileReader();
       leitor.onload = () => {
+        if (anexos.length >= 4) { avisar('Até quatro imagens por mensagem.', true); return; }
         anexos.push(leitor.result);
         mostrarAnexos();
       };

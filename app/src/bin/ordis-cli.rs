@@ -33,6 +33,8 @@ mod proxmox;
 mod response_metrics;
 #[path = "../settings.rs"]
 mod settings;
+#[path = "../vision.rs"]
+mod vision;
 #[path = "../win.rs"]
 mod win;
 
@@ -74,6 +76,25 @@ impl agente::Saida for Terminal {
 fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
     let imprimir = |m: &str| println!("{m}");
     match acao {
+        "conversar" => {
+            use std::io::Read;
+            let mut input=String::new();std::io::stdin().take(33554433).read_to_string(&mut input).map_err(|_|"Entrada inválida.")?;
+            if input.len()>33554432{return Err("Entrada excessiva.".into());}
+            let args:Value=serde_json::from_str(&input).map_err(|_|"JSON inválido.")?;
+            let s=if let Some(id)=args["id"].as_str(){agente::abrir(c,id)?}else{agente::nova(c)?};
+            let attachments:Vec<String>=serde_json::from_value(args["attachments"].clone()).map_err(|_|"Lista de anexos inválida.")?;
+            agente::responder(c,&s.id,args["text"].as_str().unwrap_or("").to_string(),attachments,&AtomicBool::new(false),&Terminal)?;
+            println!("\n[sessão {}]",s.id);return Ok(());
+        },
+        "visao" => {
+            use std::io::Read;
+            let action=std::env::args().nth(2).ok_or("Informe load, save ou diagnostic.")?;
+            let mut input=String::new();std::io::stdin().take(65537).read_to_string(&mut input).map_err(|_|"JSON inválido.")?;
+            if input.len()>65536{return Err("Entrada excessiva.".into());}
+            let args=if input.trim().is_empty(){serde_json::json!({})}else{serde_json::from_str(&input).map_err(|_|"JSON inválido.")?};
+            println!("{}",vision::action(c,&action,args)?); return Ok(());
+        },
+        "indexar" => {println!("{}",memory::semantic::tick(c,&AtomicBool::new(false))?);return Ok(());},
         "desenvolvedor" => {
             use std::io::Read;
             let action = std::env::args().nth(2).ok_or("Informe load, save ou history.")?;

@@ -81,7 +81,7 @@ def run(package,real=False):
         assert all(m['id']!=second for m in mem('list'))
         assert not mem('versions',{'id':second})
         ask('recall');assert not mem('list',{'state':'active'})
-        assert mem('technical')['schema']==5
+        assert mem('technical')['schema']==6
         print(json.dumps({'active_memory':'passed','mode':'real-localhost' if real else 'synthetic-backends','learning':True,'update':True,'exact_human_forget':True,'process_restart_persistence':True,'private_output_exported':False,'requests':None if real else len(requests)}))
     finally:
         if server:server.shutdown();server.server_close()

@@ -14,6 +14,7 @@ mod modelos;
 mod proxmox;
 mod response_metrics;
 mod settings;
+mod vision;
 mod win;
 
 use std::os::windows::process::CommandExt;
@@ -22,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use controle::{Caminhos, Painel};
 
@@ -154,6 +155,12 @@ fn renomear_sessao(c: State<'_, Ctx>, id: String, titulo: String) -> Result<(), 
 }
 
 #[tauri::command]
+async fn vision_action(c: State<'_, Ctx>, action: String, args: Value) -> Result<Value, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || vision::action(&c.caminhos, &action, args)).await
+}
+
+#[tauri::command]
 async fn enviar(
     app: AppHandle,
     c: State<'_, Ctx>,
@@ -228,6 +235,9 @@ fn abrir_url(url: String) -> Result<(), String> {
 async fn imagem(c: State<'_, Ctx>, caminho: String) -> Result<String, String> {
     let c = c.inner().clone();
     em_segundo_plano(move || {
+        if let Ok(url) = vision::data_url(&c.caminhos, std::path::Path::new(&caminho)) {
+            return Ok(url);
+        }
         let alvo = ferramentas::dentro_do_workspace(&c.caminhos, &caminho)?;
         agente::data_url(&alvo)
     })
@@ -471,6 +481,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    vision::cleanup(&caminhos, true);
     memory::start_worker(&caminhos);
     tauri::Builder::default()
         .manage::<Ctx>(Arc::new(App {
@@ -478,7 +489,20 @@ fn main() {
             resposta: Mutex::new(None),
             imagem: Mutex::new(None),
         }))
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                let c = window.state::<Ctx>();
+                if let Some(flag) = c.resposta.lock().unwrap().as_ref() {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                vision::cleanup(&c.caminhos, true);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            vision_action,
             painel,
             memory_action,
             memory_stop,
