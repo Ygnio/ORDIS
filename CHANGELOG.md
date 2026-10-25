@@ -2,6 +2,43 @@
 
 Alterações específicas do fork Lucille. O histórico e os créditos originais do ORDIS permanecem preservados.
 
+## 2026.10.25-generation-guard.2 — 2026-10-25
+
+### Proteção de geração
+
+- Perfis de conversa, visão, respostas longas e agentes, com limites de tokens,
+  prazo total, primeiro progresso e inatividade independentes no streaming.
+- Tratamento explícito de conclusão, truncamento, cancelamento, ausência de resposta
+  final e erros de transporte/backend/protocolo. Conteúdo parcial e estado são
+  preservados no histórico, sem inventar resposta final ou repetir a requisição.
+- Validação de lotes de ferramentas antes da execução, incluindo tipos, tamanhos,
+  IDs únicos e argumentos JSON. Lotes inválidos ou interrompidos não executam ações.
+- Aviso conservador de repetição de raciocínio, sem cancelamento automático por
+  repetição e sem alterar thinking, sampler, contexto, MTP ou projetor do servidor.
+- Indicadores de estado em português e configuração local dos perfis. TabbyAPI e
+  processos externos continuam preservados.
+
+### Correções e validação
+
+- Diagnóstico visual só confirma capacidade com resposta concluída.
+- Roteiros de integração isolam também LOCALAPPDATA/APPDATA; limpeza de fixtures
+  tolera bloqueios transitórios do Windows por prazo limitado.
+- Testes de protocolo, transporte, persistência e ferramentas, com dados sintéticos;
+  CI passa a incluir o teste JavaScript de geração e a integração CLI correspondente.
+- Proteções de privacidade ampliadas para artefatos instalados, modelos e arquivos
+  privados renomeados; varredura local pode incluir arquivos ainda não rastreados.
+
+### Proveniência da distribuição instalada
+
+- A instalação Windows identificada por este ID foi compilada sobre o commit-base
+  `90e3e1acf574174e621ba5ef426d976cf3c99b72` com alterações locais. Esse commit-base
+  sozinho **não representa** o conteúdo completo da distribuição instalada.
+- A distribuição oficial também possui inicialização de perfil e armazenamento
+  WebView específicos. Esses ajustes de instalação não são impostos à edição
+  genérica do repositório, que conserva suporte a ORDIS_PROJECT e perfis de teste.
+- Este registro não significa tag, publicação, novo pacote de CI ou PR criado.
+  O mapeamento de fonte e as limitações estão em docs/GENERATION-RELEASE.md.
+
 ## Unreleased
 
 - Fase 2: diagnóstico somente leitura de hardware/serviços, descoberta de limites llama.cpp via GET `/props`, métricas filtradas e cartões de capacidades.
