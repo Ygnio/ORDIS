@@ -334,7 +334,7 @@ pub async fn check_llama(url: &str, key: Option<&str>) -> Result<BackendStatus, 
     let props = get_json(&format!("{base}/props"), key, Duration::from_secs(2))
         .await
         .ok();
-    let mut metrics_request = client(Duration::from_secs(2), base)?.get(format!("{base}/metrics"));
+    let mut metrics_request = client(Duration::from_secs(2), &base)?.get(format!("{base}/metrics"));
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         metrics_request = metrics_request.bearer_auth(k);
     }
