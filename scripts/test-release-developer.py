@@ -4,6 +4,7 @@ The harness acts as the trusted human test controller for known synthetic operat
 """
 import argparse
 import ctypes
+from contextlib import closing
 from ctypes import wintypes
 import hashlib
 import http.server
@@ -153,7 +154,7 @@ def run(package, real=False):
             cfg['max_calls']=5;action('save',cfg);code,_=ask('Synthetic developer loop',False);assert code!=0
             assert len(requests)==17
         history=action('history');assert history['tasks'] and history['operations']
-        with sqlite3.connect(home/'runtime/memory/lucille.sqlite3') as db:
+        with closing(sqlite3.connect(home/'runtime/memory/lucille.sqlite3')) as db:
             evidence=db.execute('select outcome,content from memory_evidence').fetchall()
             if not elevated():
                 assert evidence and evidence[0][0]=='success'
