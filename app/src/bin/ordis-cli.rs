@@ -11,6 +11,10 @@ mod backends;
 mod benchmark;
 #[path = "../controle.rs"]
 mod controle;
+#[path = "../developer.rs"]
+mod developer;
+#[path = "../developer_runner.rs"]
+mod developer_runner;
 #[path = "../diagnostics.rs"]
 mod diagnostics;
 #[path = "../ferramentas.rs"]
@@ -43,6 +47,19 @@ impl agente::Saida for Terminal {
     fn evento(&self, tipo: &str, dados: Value) {
         let t = dados["texto"].as_str().unwrap_or("");
         match tipo {
+            "developer" => {
+                println!("\n[developer] {dados}");
+                let _ = std::io::stdout().flush();
+                if dados["state"] == "awaiting_approval" {
+                    println!("[aprovação] Digite permitir para esta operação; qualquer outra resposta recusa.");
+                    let _ = std::io::stdout().flush();
+                    let mut answer = String::new();
+                    let _ = std::io::stdin().read_line(&mut answer);
+                    if let Some(id) = dados["id"].as_str() {
+                        let _ = developer::decide(id, answer.trim() == "permitir");
+                    }
+                }
+            }
             "raciocinio" => eprint!("{t}"),
             "texto" => print!("{t}"),
             "ferramenta" => println!("\n[ferramenta] {} {}", dados["nome"], dados["argumentos"]),
@@ -57,6 +74,16 @@ impl agente::Saida for Terminal {
 fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
     let imprimir = |m: &str| println!("{m}");
     match acao {
+        "desenvolvedor" => {
+            use std::io::Read;
+            let action = std::env::args().nth(2).ok_or("Informe load, save ou history.")?;
+            let mut input = String::new();
+            std::io::stdin().take(65537).read_to_string(&mut input).map_err(|_| "Entrada inválida.")?;
+            if input.len() > 65536 { return Err("Entrada muito grande.".into()); }
+            let args = if input.trim().is_empty() { serde_json::json!({}) } else { serde_json::from_str(&input).map_err(|_| "JSON inválido.")? };
+            println!("{}", developer::action(c, &action, args)?);
+            return Ok(());
+        }
         "memoria" => {
             use std::io::Read;
             let action=std::env::args().nth(2).ok_or("Informe uma ação local de memória.")?;

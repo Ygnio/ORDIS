@@ -1,0 +1,16 @@
+const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');
+const ui=require('../app/ui/developer.js');
+test('only explicit allow authorizes operation',()=>{assert.equal(ui.decision('allow'),true);for(const v of ['deny','cancel','true',true,{},undefined])assert.equal(ui.decision(v),false);});
+test('task states distinguish refusal interruption and failure',()=>{for(const s of ['awaiting_approval','running','completed','failed','cancelled','refused','timeout','interrupted'])assert.notEqual(ui.label(s),s);});
+test('untrusted previews are text, approval goes through native IPC',()=>{const s=fs.readFileSync('app/ui/developer.js','utf8');assert.ok(!s.includes('innerHTML'));assert.match(s,/developer_decide/);assert.match(s,/interromper/);assert.match(s,/developer_action/);assert.match(s,/Abrir conversa/);});
+function harness(){
+  class Element{constructor(tag){this.tag=tag;this.children=[];this.textContent='';this.events={};this.hidden=true;}append(...n){this.children.push(...n);}replaceChildren(...n){this.children=n;}addEventListener(n,f){this.events[n]=f;}remove(){this.removed=true;}}
+  const elements=new Map();const $=(id)=>{if(!elements.has(id))elements.set(id,new Element('div'));return elements.get(id);};
+  const calls=[];let listener;
+  const window={__TAURI__:{core:{invoke:async(n,a)=>{calls.push([n,a]);}},event:{listen:(n,f)=>{listener=f;}}},ordis:{avisar:()=>{}},addEventListener:()=>{}};
+  require('node:vm').runInNewContext(fs.readFileSync('app/ui/developer.js','utf8'),{window,document:{getElementById:$,createElement:(tag)=>new Element(tag)},Map,JSON,Number,Promise});
+  return{$,calls,event:(d)=>listener({payload:{tipo:'developer',dados:d}})};
+}
+test('approval renders malicious text inert and sends exact one-shot ID',async()=>{const h=harness();h.event({id:'synthetic-op',state:'awaiting_approval',proposal:{tool:'workspace_patch',diff:'<script>malicious()</script>'}});const panel=h.$('dev-approval-panel');assert.equal(panel.hidden,false);const card=panel.children[0];assert.match(card.children[2].children[1].textContent,/<script>/);const buttons=card.children[3];await buttons.children[0].events.click();assert.equal(h.calls[0][0],'developer_decide');assert.equal(h.calls[0][1].id,'synthetic-op');assert.equal(h.calls[0][1].allow,true);assert.ok(buttons.children.every(b=>b.disabled));});
+test('refuse and cancellation have distinct native actions',async()=>{for(const index of [1,2]){const h=harness();h.event({id:'x',state:'awaiting_approval',proposal:{tool:'developer_execute'}});await h.$('dev-approval-panel').children[0].children[3].children[index].events.click();assert.equal(h.calls[0][0],index===1?'developer_decide':'interromper');if(index===1)assert.equal(h.calls[0][1].allow,false);}});
+test('running output and completion update an existing card',()=>{const h=harness();h.event({id:'x',state:'running',proposal:{tool:'developer_execute'}});h.event({id:'x',state:'output',text:'synthetic'});h.event({id:'x',state:'completed',result:{state:'completed',exit_code:0}});const card=h.$('dev-approval-panel').children[0];assert.equal(h.$('dev-approval-panel').children.length,1);assert.equal(card.children[1].textContent,'Concluído');assert.match(card.children[2].children[2].textContent,/exit_code/);assert.equal(card.children[3].children[0].textContent,'Fechar cartão');});

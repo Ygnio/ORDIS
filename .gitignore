@@ -57,3 +57,9 @@ __pycache__/
 technical-reports/
 technical-memory-report*.json
 pending-records/
+
+# Local developer tasks, approvals and source backups
+**/developer-data/
+**/developer-config.json
+**/developer-state*
+*.backup

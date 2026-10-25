@@ -27,6 +27,8 @@ tungstenite = { version = "0.24", default-features = false, features = ["handsha
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security_Cryptography",
+  "Win32_Security",
+  "Win32_System_JobObjects",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
   "Win32_System_IO",

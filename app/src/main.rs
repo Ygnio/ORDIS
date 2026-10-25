@@ -3,6 +3,8 @@
 mod agente;
 mod backends;
 mod controle;
+mod developer;
+mod developer_runner;
 mod diagnostics;
 mod ferramentas;
 mod identity;
@@ -450,6 +452,17 @@ fn memory_stop() {
     memory::stop();
 }
 
+#[tauri::command]
+async fn developer_action(c: State<'_, Ctx>, action: String, args: Value) -> Result<Value, String> {
+    let c = c.inner().clone();
+    em_segundo_plano(move || developer::action(&c.caminhos, &action, args)).await
+}
+
+#[tauri::command]
+fn developer_decide(id: String, allow: bool) -> Result<(), String> {
+    developer::decide(&id, allow)
+}
+
 fn main() {
     let caminhos = match Caminhos::descobrir() {
         Ok(c) => c,
@@ -469,6 +482,8 @@ fn main() {
             painel,
             memory_action,
             memory_stop,
+            developer_action,
+            developer_decide,
             hardware_diagnostics,
             local_settings,
             local_settings_save,
