@@ -1,5 +1,30 @@
 use super::*;
 #[test]
+fn native_quote_fallback_never_stores_model_invention_or_auto_confirms_it() {
+    let mut s = Fixture::new();
+    action(
+        &mut s,
+        "learning_save",
+        &json!({"mode":"controlled","categories":["projects"]}),
+    )
+    .unwrap();
+    let source = "Estou desenvolvendo um aplicativo chamado Aurora";
+    s.user(source, 0);
+    let proposed=s.call("memory_propose",json!({"content":"O aplicativo inventado pelo modelo se chama Outro","category":"projects","confidence":1.0})).unwrap();
+    let id = proposed["id"].as_i64().unwrap();
+    assert_eq!(one(&s, id).unwrap().content, source);
+    assert_eq!(one(&s, id).unwrap().state, "candidate");
+    assert_eq!(proposed["runtime_selected_literal_quote"], true);
+    approve(&mut s, id, false).unwrap();
+    s.user("Renomeei Aurora para Horizonte", 1);
+    let update=s.call("memory_update",json!({"id":id,"content":"O novo nome inventado seria Outro","category":"projects","reason":"Renomeação declarada"})).unwrap();
+    assert_eq!(
+        one(&s, update["id"].as_i64().unwrap()).unwrap().content,
+        "Renomeei Aurora para Horizonte"
+    );
+    assert_eq!(one(&s, id).unwrap().state, "active");
+}
+#[test]
 fn failed_human_audit_rolls_back_policy_change() {
     let mut s = Fixture::new();
     s.db.execute_batch("CREATE TRIGGER synthetic_audit_failure BEFORE INSERT ON learning_audit BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();

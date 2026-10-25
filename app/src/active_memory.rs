@@ -393,17 +393,20 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(error)?;
-        if content != row.0 || cat != "experiences" {
-            return Err(
-                "Use exatamente o conteúdo nativo da evidência e categoria experiences.".into(),
-            );
+        if cat != "experiences" || private_for_memory(&row.0) {
+            return Err("Evidência privada ou categoria diferente de experiences.".into());
         }
+        // The runtime chooses the actual observation; model wording never becomes a fact.
         row
     } else {
         if args["source"].as_str().is_some_and(|s| s != "user") {
             return Err("Origem não permitida.".into());
         }
-        if content.is_empty() || !user.contains(content) {
+        let direct_quote = user.contains(content);
+        let native_declaration = classify(&user) == Some(k)
+            || (target.is_some() && k == "project" && durable_text(&user).starts_with("renomeei "));
+        if !direct_quote && (!native_declaration || user.len() > 8000 || private_for_memory(&user))
+        {
             return Err(
                 "Use um trecho literal da última mensagem real do usuário; não invente origem."
                     .into(),
@@ -416,8 +419,18 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
         {
             return Err("Informação ambígua exige criação manual pela interface.".into());
         }
-        (content.to_string(), ordinal)
+        (
+            if direct_quote {
+                content.to_string()
+            } else {
+                user.clone()
+            },
+            ordinal,
+        )
     };
+    if durable_text(&text).starts_with("até ") && cat != "temporary" {
+        return Err("Declaração temporal exige validade explícita e categoria temporary.".into());
+    }
     let blocked:bool=s.db.query_row("SELECT EXISTS(SELECT 1 FROM memory_origin_blocks WHERE conversation=?1 AND ordinal=?2)",params![conversation,source_ordinal],|r|r.get(0)).map_err(error)?;
     if blocked {
         return Err("Origem rejeitada ou esquecida; não será recriada automaticamente.".into());
@@ -521,7 +534,7 @@ fn tool(s: &mut Store, conversation: &str, name: &str, args: &Value) -> Result<V
         audit(s, id, "proposed", "review_required")?;
     }
     Ok(
-        json!({"id":id,"state":if automatic{"active"}else{&m.state},"review_required":!automatic,"category":cat,"origin":"native_verified_reference"}),
+        json!({"id":id,"state":if automatic{"active"}else{&m.state},"review_required":!automatic,"category":cat,"origin":"native_verified_reference","runtime_selected_literal_quote":text!=content}),
     )
 }
 

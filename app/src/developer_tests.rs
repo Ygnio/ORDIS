@@ -27,8 +27,10 @@ fn active_memory_uses_native_evidence_without_copying_file_contents() {
         .as_str()
         .unwrap()
         .contains("synthetic-source-marker"));
-    let proposed=crate::memory::active::execute(&f.c,"synthetic","memory_propose",json!({"content":item["content"],"evidence_id":item["id"],"source":"developer","category":"experiences"}),&AtomicBool::new(false)).unwrap();
+    let proposed=crate::memory::active::execute(&f.c,"synthetic","memory_propose",json!({"content":"Resumo não verificado proposto pelo modelo","evidence_id":item["id"],"source":"developer","category":"experiences"}),&AtomicBool::new(false)).unwrap();
     assert_eq!(proposed["review_required"], true);
+    let stored = crate::memory::action(&f.c, "active_get", json!({"id":proposed["id"]})).unwrap();
+    assert_eq!(stored["content"], item["content"]);
 }
 #[test]
 fn operational_memory_is_scoped_to_existing_workspace_journal() {
