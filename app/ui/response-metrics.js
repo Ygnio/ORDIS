@@ -6,6 +6,9 @@ const ResponseMetrics = {
     if (m.state === 'cancelled') parts.push('Cancelada');
     else if (m.state === 'streaming') parts.push('Gerando…');
     else if (m.state === 'interrupted') parts.push('Interrompida');
+    else if (m.state === 'length') parts.push('Incompleta · limite de tokens');
+    else if (['timeout','first_token_timeout','idle_timeout'].includes(m.state)) parts.push('Interrompida · prazo excedido');
+    else if (['transport_error','backend_error','protocol_error','no_final'].includes(m.state)) parts.push('Não concluída');
     if (this.number(m.completion_tokens,0) !== null) parts.push(`${this.number(m.completion_tokens,0)} tokens gerados${m.state === 'cancelled' || m.state === 'streaming' || m.state === 'interrupted' ? ' (parcial informado)' : ''}`);
     else if (m.state !== 'cancelled' && this.number(m.estimated_tokens,0) !== null) parts.push(`≈${this.number(m.estimated_tokens,0)} tokens (estimativa local)`);
     else parts.push('tokens indisponíveis');

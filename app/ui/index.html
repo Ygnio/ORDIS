@@ -494,6 +494,19 @@
       </section>
 
       <section class="secao">
+        <h2>Limites de geração · llama.cpp</h2>
+        <div class="cartao">
+          <p class="sutil pequeno">Limites por requisição do cliente, separados do contexto do modelo. Não alteram o servidor, thinking ou amostragem. Para programação extensa, escolha o perfil de respostas longas.</p>
+          <label for="generation-profile">Perfil para as próximas solicitações</label>
+          <select id="generation-profile"><option value="auto">Automático</option><option value="conversation">Conversa comum</option><option value="vision">Perguntas visuais</option><option value="long">Programação e respostas longas</option><option value="agent">Ferramentas e agentes</option></select>
+          <p class="sutil pequeno">Automático: desenvolvimento habilitado ou continuação de ferramentas usa agentes; anexos usam visão; demais solicitações usam conversa. Um limite explícito de um fluxo especializado continua prevalecendo.</p>
+          <div id="generation-profiles" class="grade-campos generation-profiles"></div>
+          <label class="generation-observe"><input type="checkbox" id="generation-observe">Observar possíveis blocos repetidos no raciocínio (somente aviso)</label>
+          <button id="generation-save">Salvar limites locais</button>
+          <p id="generation-state" class="sutil pequeno" role="status"></p>
+        </div>
+      </section>
+      <section class="secao">
         <h2>Atalhos</h2>
         <div class="cartao atalhos">
           <span>Trocar de aba</span><kbd>Ctrl+1 … 5</kbd>
@@ -515,6 +528,7 @@
   <script src="backend-status.js"></script>
   <script src="app.js"></script>
   <script src="response-metrics.js"></script>
+  <script src="generation-policy.js"></script>
   <script src="agente.js"></script>
   <script src="imagens.js"></script>
   <script src="config.js"></script>

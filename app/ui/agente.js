@@ -190,6 +190,7 @@
         (m.chamadas || []).forEach((ch) => bloco.append(detalhesFerramenta(ch)));
         usedMemories(m.memoria_ids,m.memoria_recuperacao_ms,m.memoria_origens);
         if (m.metricas) window.ordisResponseMetrics.mount(bloco, m.metricas);
+        window.lucilleGenerationStatus.show(bloco, m.metricas);
       } else if (m.papel === 'tool' && bloco) {
         preencherResultado(bloco, m.id_chamada, m.texto, m.erro, m.imagens || []);
       }
@@ -567,6 +568,12 @@
         if (!segmento) break;
         if (!segmento.metricas) segmento.metricas = window.ordisResponseMetrics.mount(bloco,d);
         else window.ordisResponseMetrics.update(segmento.metricas,d);
+        break;
+      case 'geracao_fim':
+        window.lucilleGenerationStatus.show(bloco, d);
+        break;
+      case 'geracao_aviso':
+        window.lucilleGenerationStatus.show(bloco, {state:'streaming',repetition_warning:true});
         break;
       case 'texto':
         if (!segmento) break;

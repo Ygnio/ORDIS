@@ -740,3 +740,9 @@ select option { background: var(--solido); color: var(--texto); }
 .metrics-hidden .response-metrics { display: none; }
 @media (max-width: 700px) { .policy-list { grid-template-columns: 1fr; } }
 .dev-approval-panel { position:fixed; right:16px; bottom:16px; z-index:80; width:min(620px,94vw); max-height:75vh; overflow:auto; box-shadow:0 4px 24px #0008; } .dev-approval-panel pre, #dev-history pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:300px; overflow:auto; }
+.generation-profiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 14px 0; }
+.generation-profiles fieldset { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--borda); border-radius: 8px; }
+.generation-profiles legend { padding: 0 4px; }
+.generation-observe { display: flex; align-items: center; gap: 8px; }
+.generation-observe input[type="checkbox"] { width: auto; margin: 0; flex: 0 0 auto; }
+@media (max-width: 760px) { .generation-profiles { grid-template-columns: 1fr; } }
