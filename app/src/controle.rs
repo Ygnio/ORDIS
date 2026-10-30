@@ -30,6 +30,9 @@ pub struct Caminhos {
 
 impl Caminhos {
     pub fn descobrir() -> Result<Self, String> {
+        if cfg!(feature = "official-interface") {
+            return crate::official_profile::discover();
+        }
         // O executável fica em app/target/<perfil>/; o projeto é o primeiro
         // ancestral com config/paths.json. ORDIS_PROJECT permite sobrescrever.
         let inicio = std::env::var_os("ORDIS_PROJECT")

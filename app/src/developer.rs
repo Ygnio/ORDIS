@@ -32,6 +32,7 @@ pub struct Config {
     pub max_read_bytes: usize,
     pub max_output_bytes: usize,
     pub max_calls: usize,
+    pub approval_timeout_seconds: u64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -41,6 +42,7 @@ impl Default for Config {
             max_read_bytes: 24000,
             max_output_bytes: 64000,
             max_calls: 16,
+            approval_timeout_seconds: 600,
         }
     }
 }
@@ -87,6 +89,7 @@ fn validate(c: &Caminhos, v: Config) -> Result<Config, String> {
         return Err("Esta fase exige aprovação por operação, isolamento, histórico e backups; Git permanece bloqueado.".into());
     }
     if !(1..=600).contains(&p.timeout_seconds)
+        || !(1..=600).contains(&v.approval_timeout_seconds)
         || !(1..=64).contains(&v.max_calls)
         || !(1024..=8 * 1024 * 1024).contains(&v.max_file_bytes)
         || !(512..=128000).contains(&v.max_read_bytes)
@@ -722,6 +725,7 @@ fn prepare(scope: &Scope, cfg: &Config, name: &str, args: Value) -> Result<Prepa
 }
 struct Waiting {
     sender: mpsc::SyncSender<bool>,
+    deadline: Instant,
 }
 static WAITING: Mutex<Option<(String, Waiting)>> = Mutex::new(None);
 static REFUSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -766,6 +770,12 @@ pub fn decide(id: &str, allow: bool) -> Result<(), String> {
     if w.as_ref().is_none_or(|(key, _)| key != id) {
         return Err("Aprovação expirada ou de outra operação.".into());
     }
+    if w.as_ref()
+        .is_some_and(|(_, pending)| Instant::now() >= pending.deadline)
+    {
+        w.take();
+        return Err("Aprovação expirada; proponha novamente.".into());
+    }
     let (_, pending) = w.take().unwrap();
     pending
         .sender
@@ -778,22 +788,31 @@ fn approval(
     proposal: &Value,
     cancel: &AtomicBool,
     event: &dyn Fn(Value),
+    timeout_seconds: u64,
 ) -> Result<bool, String> {
     let (tx, rx) = mpsc::sync_channel(1);
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     {
         let mut pending = WAITING.lock().map_err(|_| "Aprovação indisponível.")?;
         if pending.is_some() {
             return Err("Outra operação aguarda aprovação.".into());
         }
-        *pending = Some((id.into(), Waiting { sender: tx }));
+        *pending = Some((
+            id.into(),
+            Waiting {
+                sender: tx,
+                deadline,
+            },
+        ));
     }
-    event(json!({"state":"awaiting_approval","id":id,"task":task,"proposal":proposal}));
-    let start = Instant::now();
+    event(
+        json!({"state":"awaiting_approval","id":id,"task":task,"proposal":proposal,"timeout_seconds":timeout_seconds}),
+    );
     let answer = loop {
         if cancel.load(Ordering::Relaxed) {
             break Err("Tarefa cancelada antes da aplicação.".into());
         }
-        if start.elapsed() > Duration::from_secs(600) {
+        if Instant::now() >= deadline {
             break Err("Aprovação expirou; proponha novamente.".into());
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -974,7 +993,14 @@ pub fn execute(
     event: &dyn Fn(Value),
 ) -> Result<Value, String> {
     execute_with(c, task, name, args, cancel, event, &|id, proposal| {
-        approval(id, task, proposal, cancel, event)
+        approval(
+            id,
+            task,
+            proposal,
+            cancel,
+            event,
+            load(c).approval_timeout_seconds,
+        )
     })
 }
 fn execute_with(

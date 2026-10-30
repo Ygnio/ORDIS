@@ -295,12 +295,45 @@ fn defaults_policy_schema_and_restart_history() {
 fn native_approval_is_one_shot_and_cannot_be_forged_as_tool() {
     let id = crate::controle::sufixo_unico();
     let cancel = AtomicBool::new(false);
-    assert!(approval(&id, "synthetic", &json!({}), &cancel, &|v| {
-        assert_eq!(v["state"], "awaiting_approval");
-        decide(&id, true).unwrap();
-    })
+    assert!(approval(
+        &id,
+        "synthetic",
+        &json!({}),
+        &cancel,
+        &|v| {
+            assert_eq!(v["state"], "awaiting_approval");
+            decide(&id, true).unwrap();
+        },
+        600
+    )
     .unwrap());
     assert!(decide(&id, true).is_err());
+    assert!(approval(
+        &id,
+        "synthetic",
+        &json!({}),
+        &cancel,
+        &|_| {
+            assert!(decide("wrong-operation", true).is_err());
+            std::thread::sleep(Duration::from_millis(1100));
+            assert!(decide(&id, true).is_err());
+        },
+        1
+    )
+    .is_err());
+    assert!(decide(&id, true).is_err());
+    assert!(approval(
+        &id,
+        "synthetic",
+        &json!({}),
+        &cancel,
+        &|_| {
+            cancel.store(true, Ordering::Relaxed);
+            decide(&id, true).unwrap();
+        },
+        600
+    )
+    .is_err());
     let f = Fixture::new();
     assert!(f.call("developer_decide", json!({"allow":true})).is_err());
 }

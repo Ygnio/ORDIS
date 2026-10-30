@@ -9,6 +9,12 @@ mod agente;
 mod backends;
 #[path = "../benchmark.rs"]
 mod benchmark;
+#[path = "../build_info.rs"]
+mod build_info;
+#[path = "../cli_input.rs"]
+mod cli_input;
+#[path = "../configuration.rs"]
+mod configuration;
 #[path = "../controle.rs"]
 mod controle;
 #[path = "../developer.rs"]
@@ -33,6 +39,8 @@ mod imagens;
 mod memory;
 #[path = "../modelos.rs"]
 mod modelos;
+#[path = "../official_profile.rs"]
+mod official_profile;
 #[path = "../proxmox.rs"]
 mod proxmox;
 #[path = "../response_metrics.rs"]
@@ -49,22 +57,35 @@ use std::sync::atomic::AtomicBool;
 
 use serde_json::Value;
 
-struct Terminal;
+struct Terminal {
+    input: cli_input::Input,
+    legacy: bool,
+}
 
 impl agente::Saida for Terminal {
     fn evento(&self, tipo: &str, dados: Value) {
         let t = dados["texto"].as_str().unwrap_or("");
         match tipo {
             "developer" => {
+                let opened = std::time::Instant::now();
                 println!("\n[developer] {dados}");
                 let _ = std::io::stdout().flush();
                 if dados["state"] == "awaiting_approval" {
-                    println!("[aprovação] Digite permitir para esta operação; qualquer outra resposta recusa.");
+                    println!("[aprovação] Envie JSON {{\"type\":\"approval\",\"id\":\"<id>\",\"decision\":\"allow|deny\"}}; EOF recusa.");
+                    if self.legacy {
+                        println!("[aprovação] Compatibilidade perguntar: digite permitir para esta operação.");
+                    }
                     let _ = std::io::stdout().flush();
-                    let mut answer = String::new();
-                    let _ = std::io::stdin().read_line(&mut answer);
                     if let Some(id) = dados["id"].as_str() {
-                        let _ = developer::decide(id, answer.trim() == "permitir");
+                        let allow = self.input.approve(
+                            id,
+                            dados["timeout_seconds"].as_u64().unwrap_or(600),
+                            self.legacy,
+                            opened,
+                        );
+                        if let Err(e) = developer::decide(id, allow) {
+                            eprintln!("[aprovação] {e}");
+                        }
                     }
                 }
             }
@@ -82,15 +103,42 @@ impl agente::Saida for Terminal {
 fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
     let imprimir = |m: &str| println!("{m}");
     match acao {
-        "conversar" => {
+        "configuracao" => {
             use std::io::Read;
-            let mut input=String::new();std::io::stdin().take(33554433).read_to_string(&mut input).map_err(|_|"Entrada inválida.")?;
-            if input.len()>33554432{return Err("Entrada excessiva.".into());}
-            let args:Value=serde_json::from_str(&input).map_err(|_|"JSON inválido.")?;
-            let s=if let Some(id)=args["id"].as_str(){agente::abrir(c,id)?}else{agente::nova(c)?};
-            let attachments:Vec<String>=serde_json::from_value(args["attachments"].clone()).map_err(|_|"Lista de anexos inválida.")?;
-            agente::responder(c,&s.id,args["text"].as_str().unwrap_or("").to_string(),attachments,&AtomicBool::new(false),&Terminal)?;
-            println!("\n[sessão {}]",s.id);return Ok(());
+            let section = std::env::args().nth(2).ok_or("Informe backend, generation ou settings.")?;
+            let action = std::env::args().nth(3).unwrap_or_else(|| "load".into());
+            let mut input = String::new();
+            std::io::stdin().take(65537).read_to_string(&mut input)
+                .map_err(|_| "Entrada inválida.")?;
+            if input.len() > 65536 {
+                return Err("Entrada excessiva.".into());
+            }
+            let value = if input.trim().is_empty() {
+                serde_json::json!({})
+            } else {
+                serde_json::from_str(&input).map_err(|_| "JSON inválido.")?
+            };
+            println!("{}", configuration::action(c, &section, &action, value)?);
+            return Ok(());
+        }
+        "conversar" => {
+            let (input, args) = cli_input::Input::start(true)?;
+            let args = args.ok_or("JSON inicial ausente.")?;
+            let terminal = Terminal { input, legacy: false };
+            let s = if let Some(id) = args["id"].as_str() {
+                agente::abrir(c, id)?
+            } else {
+                agente::nova(c)?
+            };
+            let attachments: Vec<String> = serde_json::from_value(args["attachments"].clone())
+                .map_err(|_| "Lista de anexos inválida.")?;
+            agente::responder(c, &s.id, args["text"].as_str().unwrap_or("").to_string(),
+                attachments, &cli_input::CANCEL, &terminal)?;
+            if !cli_input::CANCEL.load(std::sync::atomic::Ordering::Relaxed) {
+                memory::idle_tick(c)?;
+            }
+            println!("\n[sessão {}]", s.id);
+            return Ok(());
         },
         "visao" => {
             use std::io::Read;
@@ -129,10 +177,12 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
             return Ok(());
         }
         "perguntar" => {
+            let (input, _) = cli_input::Input::start(false)?;
+            let terminal = Terminal { input, legacy: true };
             let texto = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
             let s = agente::nova(c)?;
-            agente::responder(c, &s.id, texto, vec![], &AtomicBool::new(false), &Terminal)?;
-            memory::idle_tick(c)?;
+            agente::responder(c, &s.id, texto, vec![], &cli_input::CANCEL, &terminal)?;
+            if !cli_input::CANCEL.load(std::sync::atomic::Ordering::Relaxed) { memory::idle_tick(c)?; }
             println!("\n[sessão {}]", s.id);
             return Ok(());
         }
@@ -170,6 +220,17 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
 }
 
 fn main() {
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("--version" | "versao")
+    ) {
+        println!("{}", build_info::value());
+        return;
+    }
+    if let Err(e) = cli_input::install_cancel_handler() {
+        eprintln!("ERRO: {e}");
+        std::process::exit(1);
+    }
     let acao = std::env::args().nth(1).unwrap_or_else(|| "estado".into());
     let r = controle::Caminhos::descobrir().and_then(|c| executar(&c, &acao));
     if let Err(e) = r {

@@ -1,5 +1,8 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+invoke('build_info').then((v) => {
+  document.getElementById('build-info').textContent = `${v.distribution === 'lucille' ? 'Lucille' : 'ORDIS'} · ${v.version} · ${v.commit.slice(0, 12)} · ${v.target}${v.dirty ? ' · desenvolvimento não versionado' : ''}`;
+}).catch(() => { document.getElementById('build-info').textContent = 'Versão indisponível'; });
 
 let backendAtual = null;
 const nomeBackend = () => backendAtual?.backend === 'llama_cpp' ? 'llama.cpp' : 'TabbyAPI';

@@ -18,6 +18,7 @@
     for (const [id, key] of [['enabled', 'enabled'], ['read', 'allow_read'], ['write', 'allow_write'], ['execute', 'allow_execute']]) $(`dev-${id}`).checked = p[key];
     for (const key of ['workspace', 'python', 'shell']) $(`dev-${key}`).value = p[key];
     $('dev-timeout').value = p.timeout_seconds;
+    $('dev-approval-timeout').value = config.approval_timeout_seconds;
     for (const [id, key] of [['calls', 'max_calls'], ['file-limit', 'max_file_bytes'], ['read-limit', 'max_read_bytes'], ['output-limit', 'max_output_bytes']]) $(`dev-${id}`).value = config[key];
     $('dev-estado').textContent = p.enabled ? 'Ativo neste workspace; escritas e execuções aguardam aprovação individual.' : 'Desativado. Nenhuma ferramenta de desenvolvimento é enviada ao modelo.';
   }
@@ -44,6 +45,7 @@
       for (const key of ['workspace', 'python', 'shell']) p[key] = $(`dev-${key}`).value.trim();
       p.timeout_seconds = Number($('dev-timeout').value);
       const next = { ...config, permissions: p };
+      next.approval_timeout_seconds = Number($('dev-approval-timeout').value);
       for (const [id, key] of [['calls', 'max_calls'], ['file-limit', 'max_file_bytes'], ['read-limit', 'max_read_bytes'], ['output-limit', 'max_output_bytes']]) next[key] = Number($(`dev-${id}`).value);
       await action('save', next); await load(); avisar('Permissões salvas apenas neste computador.');
     } catch (error) { avisar(String(error), true); }
