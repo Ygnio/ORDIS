@@ -646,7 +646,14 @@ fn rodar_interno(
                             imagens: vec![],
                             erro: matches!(
                                 v["state"].as_str(),
-                                Some("failed" | "refused" | "cancelled" | "timeout")
+                                Some(
+                                    "failed"
+                                        | "refused"
+                                        | "cancelled"
+                                        | "timeout"
+                                        | "timed_out"
+                                        | "interrupted"
+                                )
                             ),
                         },
                         Err(e) => ferramentas::Resultado {

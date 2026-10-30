@@ -120,3 +120,5 @@ Antes de qualquer teste com Gemma: exigir autorização específica, verificar s
 modelo/parâmetros, recursos e slot ocioso; usar apenas perfil/fixtures sintéticos, uma chamada
 limitada por vez e aprovação de cada job. Não alterar contexto, MTP, visão ou sampler. Preparar
 plano supervisionado separado; a presente fase não o executa.
+
+O transporte de saída limitado também cobre jobs solicitados por chamada de ferramenta na CLI de conversa. O cancelamento externo por ID é observado durante a aprovação nesse caminho. Estados timed_out/interrupted são falhas no resultado e histórico da conversa; não são sucesso. Os testes de agente usam backend HTTP sintético, conferem o papel tool e os campos confiáveis/não confiáveis, sem modelo real. A integração com memória reutiliza a projeção operacional do diário; logs de compiladores não viram fatos confirmados automaticamente.
