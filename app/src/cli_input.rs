@@ -147,11 +147,25 @@ impl Input {
     }
 
     pub fn approve(&self, id: &str, seconds: u64, legacy: bool, opened: Instant) -> bool {
+        self.approve_controlled(id, seconds, legacy, opened, None)
+    }
+
+    pub fn approve_controlled(
+        &self,
+        id: &str,
+        seconds: u64,
+        legacy: bool,
+        opened: Instant,
+        cancel_file: Option<&std::path::Path>,
+    ) -> bool {
         let deadline = opened + Duration::from_secs(seconds.clamp(1, 600));
         let Ok(rx) = self.receiver.lock() else {
             return false;
         };
         loop {
+            if cancel_file.is_some_and(|p| p.is_file()) {
+                CANCEL.store(true, Ordering::Relaxed);
+            }
             if CANCEL.load(Ordering::Relaxed) || Instant::now() >= deadline {
                 return false;
             }

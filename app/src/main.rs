@@ -6,6 +6,7 @@ mod build_info;
 mod configuration;
 mod controle;
 mod developer;
+mod developer_jobs;
 mod developer_runner;
 mod diagnostics;
 mod ferramentas;
@@ -39,6 +40,7 @@ struct App {
     resposta: Mutex<Option<Arc<AtomicBool>>>,
     /// Sinal de cancelamento da geração pedida pela aba Imagens.
     imagem: Mutex<Option<Arc<AtomicBool>>>,
+    job: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 type Ctx = Arc<App>;
@@ -485,6 +487,58 @@ async fn developer_action(c: State<'_, Ctx>, action: String, args: Value) -> Res
 }
 
 #[tauri::command]
+async fn developer_job_submit(
+    app: AppHandle,
+    c: State<'_, Ctx>,
+    args: Value,
+) -> Result<Value, String> {
+    let c = c.inner().clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut active = c.job.lock().unwrap();
+        if active.is_some() {
+            return Err("Outro job desta janela está ativo.".into());
+        }
+        *active = Some(cancel.clone());
+    }
+    let c2 = c.clone();
+    let result = em_segundo_plano(move || {
+        let task = format!("job-{}", controle::sufixo_unico());
+        developer::begin(
+            &c2.caminhos,
+            &task,
+            "Job sintético aprovado individualmente",
+        );
+        let result = developer::execute(
+            &c2.caminhos,
+            &task,
+            "developer_job",
+            args,
+            &cancel,
+            &|dados| {
+                let _ = app.emit(
+                    "agente",
+                    json!({"sessao":task,"tipo":"developer","dados":dados}),
+                );
+            },
+        );
+        developer::finish(
+            &c2.caminhos,
+            &task,
+            result
+                .as_ref()
+                .ok()
+                .and_then(|v| v["state"].as_str())
+                .unwrap_or("failed"),
+        );
+        result
+    })
+    .await;
+    *c.job.lock().unwrap() = None;
+    result
+}
+
+#[tauri::command]
 fn developer_decide(id: String, allow: bool) -> Result<(), String> {
     developer::decide(&id, allow)
 }
@@ -549,6 +603,7 @@ fn main() {
             caminhos,
             resposta: Mutex::new(None),
             imagem: Mutex::new(None),
+            job: Mutex::new(None),
         }))
         .on_window_event(|window, event| {
             if matches!(
@@ -557,6 +612,9 @@ fn main() {
             ) {
                 let c = window.state::<Ctx>();
                 if let Some(flag) = c.resposta.lock().unwrap().as_ref() {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                if let Some(flag) = c.job.lock().unwrap().as_ref() {
                     flag.store(true, Ordering::Relaxed);
                 }
                 vision::cleanup(&c.caminhos, true);
@@ -571,6 +629,7 @@ fn main() {
             memory_stop,
             developer_action,
             developer_decide,
+            developer_job_submit,
             hardware_diagnostics,
             local_settings,
             local_settings_save,

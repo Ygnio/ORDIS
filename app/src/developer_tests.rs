@@ -304,7 +304,8 @@ fn native_approval_is_one_shot_and_cannot_be_forged_as_tool() {
             assert_eq!(v["state"], "awaiting_approval");
             decide(&id, true).unwrap();
         },
-        600
+        600,
+        None
     )
     .unwrap());
     assert!(decide(&id, true).is_err());
@@ -318,7 +319,8 @@ fn native_approval_is_one_shot_and_cannot_be_forged_as_tool() {
             std::thread::sleep(Duration::from_millis(1100));
             assert!(decide(&id, true).is_err());
         },
-        1
+        1,
+        None
     )
     .is_err());
     assert!(decide(&id, true).is_err());
@@ -331,7 +333,8 @@ fn native_approval_is_one_shot_and_cannot_be_forged_as_tool() {
             cancel.store(true, Ordering::Relaxed);
             decide(&id, true).unwrap();
         },
-        600
+        600,
+        None
     )
     .is_err());
     let f = Fixture::new();

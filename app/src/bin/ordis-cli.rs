@@ -19,6 +19,8 @@ mod configuration;
 mod controle;
 #[path = "../developer.rs"]
 mod developer;
+#[path = "../developer_jobs.rs"]
+mod developer_jobs;
 #[path = "../developer_runner.rs"]
 mod developer_runner;
 #[path = "../diagnostics.rs"]
@@ -100,9 +102,72 @@ impl agente::Saida for Terminal {
     }
 }
 
+fn job_request(c: &controle::Caminhos) -> Result<(), String> {
+    let (input, args) = cli_input::Input::start(true)?;
+    let args = args.ok_or("JSON inicial ausente.")?;
+    let task = format!("job-{}", controle::sufixo_unico());
+    developer::begin(c, &task, "Job sintético aprovado individualmente");
+    let result = developer::execute(
+        c,
+        &task,
+        "developer_job",
+        args,
+        &cli_input::CANCEL,
+        &|dados| {
+            let opened = std::time::Instant::now();
+            println!("{}", serde_json::json!({"type":"developer","data":dados}));
+            let _ = std::io::stdout().flush();
+            if dados["state"] == "awaiting_approval" {
+                if let Some(id) = dados["id"].as_str() {
+                    let cancel_path = developer_jobs::cancel_path(c, id).ok();
+                    let allow = input.approve_controlled(
+                        id,
+                        dados["timeout_seconds"].as_u64().unwrap_or(600),
+                        false,
+                        opened,
+                        cancel_path.as_deref(),
+                    );
+                    if let Err(e) = developer::decide(id, allow) {
+                        eprintln!("{e}");
+                    }
+                }
+            }
+        },
+    );
+    developer::finish(
+        c,
+        &task,
+        result
+            .as_ref()
+            .ok()
+            .and_then(|v| v["state"].as_str())
+            .unwrap_or("failed"),
+    );
+    match result {
+        Ok(value) => {
+            println!("{}", serde_json::json!({"type":"job_result","data":value}));
+            Ok(())
+        }
+        Err(error) => {
+            println!("{}", serde_json::json!({"type":"job_error","error":error}));
+            Err(error)
+        }
+    }
+}
+
 fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
     let imprimir = |m: &str| println!("{m}");
     match acao {
+        "job" if std::env::args().nth(2).as_deref()==Some("solicitar") => return job_request(c),
+        "job" => {
+            use std::io::Read;
+            let name=std::env::args().nth(2).ok_or("Informe solicitar, history, get, logs ou cancel.")?;
+            if !["history","get","logs","cancel","fixture","projects"].contains(&name.as_str()){return Err("Ação de job não permitida.".into());}
+            let mut bytes=String::new();std::io::stdin().take(65537).read_to_string(&mut bytes).map_err(|_|"Entrada inválida.")?;
+            if bytes.len()>65536{return Err("Entrada excessiva.".into());}
+            let args=if bytes.trim().is_empty(){serde_json::json!({})}else{serde_json::from_str(&bytes).map_err(|_|"JSON inválido.")?};
+            println!("{}",developer::action(c,&format!("job_{name}"),args)?);return Ok(());
+        }
         "configuracao" => {
             use std::io::Read;
             let section = std::env::args().nth(2).ok_or("Informe backend, generation ou settings.")?;
