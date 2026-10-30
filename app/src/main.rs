@@ -2,6 +2,8 @@
 
 mod agente;
 mod backends;
+mod build_info;
+mod configuration;
 mod controle;
 mod developer;
 mod developer_runner;
@@ -14,6 +16,7 @@ mod identity;
 mod imagens;
 mod memory;
 mod modelos;
+mod official_profile;
 mod proxmox;
 mod response_metrics;
 mod settings;
@@ -170,18 +173,7 @@ async fn generation_config(
     value: Value,
 ) -> Result<Value, String> {
     let c = c.inner().clone();
-    em_segundo_plano(move || match action.as_str() {
-        "load" => serde_json::to_value(generation_policy::load(&c.caminhos)?)
-            .map_err(|_| "Falha ao ler limites.".into()),
-        "save" => {
-            let config =
-                serde_json::from_value(value).map_err(|_| "Configuração de geração inválida.")?;
-            generation_policy::save(&c.caminhos, config)?;
-            Ok(json!({"saved":true}))
-        }
-        _ => Err("Ação de geração desconhecida.".into()),
-    })
-    .await
+    em_segundo_plano(move || configuration::generation(&c.caminhos, &action, value)).await
 }
 
 #[tauri::command]
@@ -497,7 +489,19 @@ fn developer_decide(id: String, allow: bool) -> Result<(), String> {
     developer::decide(&id, allow)
 }
 
+#[tauri::command]
+fn build_info() -> Value {
+    build_info::value()
+}
+
 fn main() {
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("--version" | "versao")
+    ) {
+        println!("{}", build_info::value());
+        return;
+    }
     let caminhos = match Caminhos::descobrir() {
         Ok(c) => c,
         Err(e) => {
@@ -505,9 +509,42 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let _instance = if cfg!(feature = "official-interface") {
+        match official_profile::Instance::acquire(&caminhos.projeto) {
+            Ok(Some(instance)) => Some(instance),
+            Ok(None) => return,
+            Err(e) => {
+                eprintln!("Lucille: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+    let mut context = tauri::generate_context!();
+    let mut window_config = context.config().app.windows[0].clone();
+    context.config_mut().app.windows.clear();
+    let webview_data = if cfg!(feature = "official-interface") {
+        context.config_mut().product_name = Some("Lucille".into());
+        context.config_mut().identifier = "local.lucille.interface".into();
+        window_config.title = "Lucille — staging CLI/GUI".into();
+        window_config.transparent = false;
+        window_config.window_effects = None;
+        Some(caminhos.projeto.join("webview2"))
+    } else {
+        None
+    };
     vision::cleanup(&caminhos, true);
     memory::start_worker(&caminhos);
     tauri::Builder::default()
+        .setup(move |app| {
+            let mut window = tauri::WebviewWindowBuilder::from_config(app, &window_config)?;
+            if let Some(data) = webview_data {
+                window = window.data_directory(data);
+            }
+            window.build()?;
+            Ok(())
+        })
         .manage::<Ctx>(Arc::new(App {
             caminhos,
             resposta: Mutex::new(None),
@@ -526,6 +563,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            build_info,
             vision_action,
             generation_config,
             painel,
@@ -566,6 +604,6 @@ fn main() {
             modelos_importar_fluxo,
             modelos_abrir_pasta
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("falha ao iniciar a janela do ORDIS");
 }

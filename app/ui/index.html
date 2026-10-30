@@ -242,6 +242,7 @@
     </main>
     <main id="vista-config" class="vista config" hidden>
       <h1>Configurações</h1>
+      <p id="build-info" class="sutil pequeno"></p>
       <section class="secao"><h2>Lucille — identidade permanente</h2>
         <p class="sutil">Este perfil é privado e só muda ao salvar aqui. Memórias e mensagens não alteram automaticamente sua identidade. ORDIS continua sendo o nome do aplicativo.</p>
         <form id="identity-form" class="cartao mem-controls">
@@ -480,6 +481,7 @@
             <div><label for="dev-python">Executável Python instalado (caminho absoluto)</label><input id="dev-python" spellcheck="false"></div>
             <div><label for="dev-shell">Executável PowerShell instalado (caminho absoluto)</label><input id="dev-shell" spellcheck="false"></div>
             <div><label for="dev-timeout">Timeout por execução (segundos)</label><input id="dev-timeout" type="number" min="1" max="600"></div>
+            <div><label for="dev-approval-timeout">Prazo para aprovação humana (segundos)</label><input id="dev-approval-timeout" type="number" min="1" max="600"></div>
             <div><label for="dev-calls">Chamadas por turno</label><input id="dev-calls" type="number" min="1" max="64"></div>
             <div><label for="dev-file-limit">Limite de edição (bytes)</label><input id="dev-file-limit" type="number" min="1024" max="8388608"></div>
             <div><label for="dev-read-limit">Limite de leitura (bytes)</label><input id="dev-read-limit" type="number" min="512" max="128000"></div>
