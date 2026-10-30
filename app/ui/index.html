@@ -492,6 +492,21 @@
           <button id="dev-history-refresh">Atualizar histórico</button>
           <p id="dev-estado" class="sutil pequeno" role="status"></p>
           <div id="dev-history"></div>
+          <details id="jobs-panel"><summary>Jobs de desenvolvimento — somente projetos sintéticos</summary>
+            <p>Compiladores e testes executam código. Esta versão aceita apenas o catálogo revisado. Os limites de processos não isolam arquivos nem rede. Requer workspace, escrita e execução autorizados acima.</p>
+            <label><input id="jobs-enabled" type="checkbox"> Habilitar jobs sintéticos</label>
+            <div id="jobs-settings" class="grade"></div>
+            <button id="jobs-save">Salvar ferramentas e limites locais</button>
+            <div><label>Linguagem <select id="jobs-language"><option>rust</option><option>node</option><option>python</option></select></label>
+            <label>Caso <select id="jobs-case"><option>pass</option><option>compile_error</option><option>test_fail</option><option>wait</option><option>output</option><option>child</option><option>unformatted</option></select></label>
+            <button id="jobs-fixture">Criar projeto sintético sem sobrescrever</button></div>
+            <label>Projeto <select id="jobs-project"></select></label>
+            <label>Operação <select id="jobs-operation"></select></label>
+            <label>Justificativa <input id="jobs-reason" maxlength="500" value="Validar fixture sintética autorizada"></label>
+            <button id="jobs-submit">Solicitar job e aprovação</button>
+            <button id="jobs-refresh">Atualizar jobs</button>
+            <p id="jobs-state" role="status"></p><div id="jobs-history"></div>
+          </details>
         </div>
       </section>
 
@@ -541,5 +556,6 @@
   <script src="active-memory.js"></script>
   <script src="identity.js"></script>
   <script src="developer.js"></script>
+  <script src="developer-jobs.js"></script>
 </body>
 </html>

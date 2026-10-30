@@ -13,12 +13,16 @@ mod benchmark;
 mod build_info;
 #[path = "../cli_input.rs"]
 mod cli_input;
+#[path = "../cli_output.rs"]
+mod cli_output;
 #[path = "../configuration.rs"]
 mod configuration;
 #[path = "../controle.rs"]
 mod controle;
 #[path = "../developer.rs"]
 mod developer;
+#[path = "../developer_jobs.rs"]
+mod developer_jobs;
 #[path = "../developer_runner.rs"]
 mod developer_runner;
 #[path = "../diagnostics.rs"]
@@ -52,7 +56,6 @@ mod vision;
 #[path = "../win.rs"]
 mod win;
 
-use std::io::Write;
 use std::sync::atomic::AtomicBool;
 
 use serde_json::Value;
@@ -60,6 +63,7 @@ use serde_json::Value;
 struct Terminal {
     input: cli_input::Input,
     legacy: bool,
+    output: cli_output::Output,
 }
 
 impl agente::Saida for Terminal {
@@ -68,20 +72,28 @@ impl agente::Saida for Terminal {
         match tipo {
             "developer" => {
                 let opened = std::time::Instant::now();
-                println!("\n[developer] {dados}");
-                let _ = std::io::stdout().flush();
+                self.output.emit(format!("\n[developer] {dados}\n"));
                 if dados["state"] == "awaiting_approval" {
-                    println!("[aprovação] Envie JSON {{\"type\":\"approval\",\"id\":\"<id>\",\"decision\":\"allow|deny\"}}; EOF recusa.");
+                    self.output.emit("[aprovação] Envie JSON {\"type\":\"approval\",\"id\":\"<id>\",\"decision\":\"allow|deny\"}; EOF recusa.\n".into());
                     if self.legacy {
-                        println!("[aprovação] Compatibilidade perguntar: digite permitir para esta operação.");
+                        self.output.emit("[aprovação] Compatibilidade perguntar: digite permitir para esta operação.\n".into());
                     }
-                    let _ = std::io::stdout().flush();
                     if let Some(id) = dados["id"].as_str() {
-                        let allow = self.input.approve(
+                        let cancel_file = if dados["proposal"]["tool"] == "developer_job" {
+                            dados["proposal"]["cwd"]
+                                .as_str()
+                                .and_then(|cwd| std::path::Path::new(cwd).parent())
+                                .filter(|dir| dir.file_name().and_then(|n| n.to_str()) == Some(id))
+                                .map(|dir| dir.join("cancel.request"))
+                        } else {
+                            None
+                        };
+                        let allow = self.input.approve_controlled(
                             id,
                             dados["timeout_seconds"].as_u64().unwrap_or(600),
                             self.legacy,
                             opened,
+                            cancel_file.as_deref(),
                         );
                         if let Err(e) = developer::decide(id, allow) {
                             eprintln!("[aprovação] {e}");
@@ -90,19 +102,103 @@ impl agente::Saida for Terminal {
                 }
             }
             "raciocinio" => eprint!("{t}"),
-            "texto" => print!("{t}"),
-            "ferramenta" => println!("\n[ferramenta] {} {}", dados["nome"], dados["argumentos"]),
-            "resultado" => println!("[resultado] {}", t.chars().take(300).collect::<String>()),
-            "status" => println!("[status] {t}"),
+            "texto" => {
+                self.output.emit(t.into());
+            }
+            "ferramenta" => {
+                self.output.emit(format!(
+                    "\n[ferramenta] {} {}\n",
+                    dados["nome"], dados["argumentos"]
+                ));
+            }
+            "resultado" => {
+                self.output.emit(format!(
+                    "[resultado] {}\n",
+                    t.chars().take(300).collect::<String>()
+                ));
+            }
+            "status" => {
+                self.output.emit(format!("[status] {t}\n"));
+            }
             _ => {}
         }
-        let _ = std::io::stdout().flush();
     }
+}
+
+fn job_request(c: &controle::Caminhos) -> Result<(), String> {
+    let (input, args) = cli_input::Input::start(true)?;
+    let args = args.ok_or("JSON inicial ausente.")?;
+    let output = cli_output::Output::new();
+    let task = format!("job-{}", controle::sufixo_unico());
+    developer::begin(c, &task, "Job sintético aprovado individualmente");
+    let result = developer::execute(
+        c,
+        &task,
+        "developer_job",
+        args,
+        &cli_input::CANCEL,
+        &|dados| {
+            let opened = std::time::Instant::now();
+            if !output.json(serde_json::json!({"type":"developer","data":dados})) {
+                cli_input::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if dados["state"] == "awaiting_approval" {
+                if let Some(id) = dados["id"].as_str() {
+                    let cancel_path = developer_jobs::cancel_path(c, id).ok();
+                    let allow = input.approve_controlled(
+                        id,
+                        dados["timeout_seconds"].as_u64().unwrap_or(600),
+                        false,
+                        opened,
+                        cancel_path.as_deref(),
+                    );
+                    if let Err(e) = developer::decide(id, allow) {
+                        eprintln!("{e}");
+                    }
+                }
+            }
+        },
+    );
+    developer::finish(
+        c,
+        &task,
+        result
+            .as_ref()
+            .ok()
+            .and_then(|v| v["state"].as_str())
+            .unwrap_or("failed"),
+    );
+    let (frame, outcome) = match result {
+        Ok(value) => (
+            serde_json::json!({"type":"job_result","data":value}),
+            Ok(()),
+        ),
+        Err(error) => (
+            serde_json::json!({"type":"job_error","error":error}),
+            Err(error),
+        ),
+    };
+    let sent = output.json(frame);
+    output.finish()?;
+    if !sent {
+        return Err("Saída JSONL saturada; job registrado no histórico privado.".into());
+    }
+    outcome
 }
 
 fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
     let imprimir = |m: &str| println!("{m}");
     match acao {
+        "job" if std::env::args().nth(2).as_deref()==Some("solicitar") => return job_request(c),
+        "job" => {
+            use std::io::Read;
+            let name=std::env::args().nth(2).ok_or("Informe solicitar, history, get, logs ou cancel.")?;
+            if !["history","get","logs","cancel","fixture","projects"].contains(&name.as_str()){return Err("Ação de job não permitida.".into());}
+            let mut bytes=String::new();std::io::stdin().take(65537).read_to_string(&mut bytes).map_err(|_|"Entrada inválida.")?;
+            if bytes.len()>65536{return Err("Entrada excessiva.".into());}
+            let args=if bytes.trim().is_empty(){serde_json::json!({})}else{serde_json::from_str(&bytes).map_err(|_|"JSON inválido.")?};
+            println!("{}",developer::action(c,&format!("job_{name}"),args)?);return Ok(());
+        }
         "configuracao" => {
             use std::io::Read;
             let section = std::env::args().nth(2).ok_or("Informe backend, generation ou settings.")?;
@@ -124,7 +220,7 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
         "conversar" => {
             let (input, args) = cli_input::Input::start(true)?;
             let args = args.ok_or("JSON inicial ausente.")?;
-            let terminal = Terminal { input, legacy: false };
+            let terminal = Terminal { input, legacy: false, output:cli_output::Output::new() };
             let s = if let Some(id) = args["id"].as_str() {
                 agente::abrir(c, id)?
             } else {
@@ -132,8 +228,11 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
             };
             let attachments: Vec<String> = serde_json::from_value(args["attachments"].clone())
                 .map_err(|_| "Lista de anexos inválida.")?;
-            agente::responder(c, &s.id, args["text"].as_str().unwrap_or("").to_string(),
-                attachments, &cli_input::CANCEL, &terminal)?;
+            let result=agente::responder(c, &s.id, args["text"].as_str().unwrap_or("").to_string(),
+                attachments, &cli_input::CANCEL, &terminal);
+            let delivery = terminal.output.finish();
+            result?;
+            delivery?;
             if !cli_input::CANCEL.load(std::sync::atomic::Ordering::Relaxed) {
                 memory::idle_tick(c)?;
             }
@@ -178,10 +277,13 @@ fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
         }
         "perguntar" => {
             let (input, _) = cli_input::Input::start(false)?;
-            let terminal = Terminal { input, legacy: true };
+            let terminal = Terminal { input, legacy: true, output:cli_output::Output::new() };
             let texto = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
             let s = agente::nova(c)?;
-            agente::responder(c, &s.id, texto, vec![], &cli_input::CANCEL, &terminal)?;
+            let result=agente::responder(c, &s.id, texto, vec![], &cli_input::CANCEL, &terminal);
+            let delivery = terminal.output.finish();
+            result?;
+            delivery?;
             if !cli_input::CANCEL.load(std::sync::atomic::Ordering::Relaxed) { memory::idle_tick(c)?; }
             println!("\n[sessão {}]", s.id);
             return Ok(());

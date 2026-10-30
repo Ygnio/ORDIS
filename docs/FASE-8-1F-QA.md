@@ -34,3 +34,9 @@ apagamento dos arquivos. Testar apenas cópias sintéticas: preservar bytes/hash
 ler com a versão antiga, recuperar uma cópia compatível retirando apenas o campo conhecido,
 e confirmar permissões/identidade. Na atualização real futura: backup datado e verificado;
 não sobrescrever bancos novos com backups antigos. Não há migração pessoal nesta fase.
+
+
+Atualização humana de 30/10: identidade após reinício/edição e CRUD de memória PASS, com exclusão e integrity_check do banco sintético confirmados. Expiração sem aprovação PASS: diário timeout e ausência de arquivo. Anexos PNG/JPEG/WebP com prévia/envio PASS; incompatível e tamanho excessivo recusados. Troca TabbyAPI, HTTP 503 e recuperação PASS. Os subcasos remanescentes de anexos e HTTP continuam PENDENTES/BLOCKED na matriz local; o PR permanece em rascunho.
+
+
+Fechamento final humano: os subcasos restantes também PASS — arquivo ausente recusado, seletor cancelado sem anexo/mensagem residual; HTTP 400, timeout e conexão recusada com recuperação. Os quatro grupos da 8.1F estão PASS. Configurações do perfil sintético restauradas; mocks suplementares encerrados por seus sinais próprios. O aceite se refere à build 8618eaa, não aos novos jobs da 8.2A, cuja matriz é independente. PR #11 mantido em rascunho, sem merge ou implantação.

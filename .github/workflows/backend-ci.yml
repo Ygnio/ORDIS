@@ -144,6 +144,30 @@ jobs:
         shell: pwsh
         run: python -B scripts/test-generation-integration.py --cli app/target/release/ordis-cli.exe
 
+      - name: Validate synthetic developer jobs without installing local tools
+        shell: pwsh
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP 'jobs-installed-tools.json'
+          @{node=(Get-Command node.exe).Source;python=(Get-Command python.exe).Source} | ConvertTo-Json | Set-Content -Encoding utf8 $tools
+          python -B scripts/test-developer-jobs.py --cli app/target/release/ordis-cli.exe --tools $tools --output "${{ runner.temp }}/developer-jobs-results.json" --languages node python --allow-elevated-blocked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate mock agent routing and job result semantics
+        shell: pwsh
+        run: |
+          python -B scripts/test-agent-jobs.py --cli app/target/release/ordis-cli.exe --tools "${{ runner.temp }}/jobs-installed-tools.json" --output "${{ runner.temp }}/agent-jobs-results.json" --allow-elevated-blocked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve synthetic job diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: developer-jobs-results
+          path: |
+            ${{ runner.temp }}/developer-jobs-results.json
+            ${{ runner.temp }}/agent-jobs-results.json
+          if-no-files-found: ignore
+
       - name: Validate human control protocol and scoped Ctrl+C
         shell: pwsh
         run: python -B scripts/test-cli-control.py --cli app/target/release/ordis-cli.exe
