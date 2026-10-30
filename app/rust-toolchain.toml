@@ -1,4 +1,4 @@
-# O toolchain GNU traz o próprio linker e não depende do Windows SDK.
+# Native executables must already exist; scripts/offline_build.py never invokes rustup.
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+channel = "1.99.1-x86_64-pc-windows-gnu"
 profile = "minimal"
