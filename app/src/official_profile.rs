@@ -56,16 +56,18 @@ pub fn discover() -> Result<Caminhos, String> {
         let staging = std::env::var_os("LUCILLE_STAGING_ROOT")
             .map(PathBuf::from)
             .ok_or("Staging exige um perfil sintético explícito; não abra sobre dados oficiais.")?;
-        if staging != local
-            || std::fs::read_to_string(local.join("synthetic-staging.txt"))
-                .ok()
-                .as_deref()
-                != Some("ORDIS synthetic staging\n")
-        {
-            return Err("Raiz de staging sintética não confirmada.".into());
-        }
+        validate_staging(&local, &staging)?;
     }
     resolve(&local, configured.as_deref())
+}
+
+fn validate_staging(local: &Path, staging: &Path) -> Result<(), String> {
+    let marker = std::fs::read_to_string(local.join("synthetic-staging.txt"))
+        .map_err(|_| "Marcador de staging ausente.")?;
+    if staging != local || marker.trim_end_matches(['\r', '\n']) != "ORDIS synthetic staging" {
+        return Err("Raiz de staging sintética não confirmada.".into());
+    }
+    Ok(())
 }
 
 pub struct Instance(windows_sys::Win32::Foundation::HANDLE);
@@ -107,6 +109,23 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn staging_requires_explicit_matching_root_and_accepts_windows_newlines() {
+        let root =
+            std::env::temp_dir().join(format!("lucille-staging-marker-{}", std::process::id()));
+        assert!(!root.exists());
+        std::fs::create_dir(&root).unwrap();
+        assert!(validate_staging(&root, &root).is_err());
+        for marker in ["ORDIS synthetic staging\n", "ORDIS synthetic staging\r\n"] {
+            std::fs::write(root.join("synthetic-staging.txt"), marker).unwrap();
+            assert!(validate_staging(&root, &root).is_ok());
+            assert!(validate_staging(&root, &root.join("other")).is_err());
+        }
+        std::fs::write(root.join("synthetic-staging.txt"), "not synthetic").unwrap();
+        assert!(validate_staging(&root, &root).is_err());
+        std::fs::remove_file(root.join("synthetic-staging.txt")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn stable_profile_refuses_missing_qa_and_redirected_config() {
         let p =

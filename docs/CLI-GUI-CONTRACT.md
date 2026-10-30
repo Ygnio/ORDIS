@@ -82,7 +82,7 @@ controle transacional de múltiplos processos sobre arquivos JSON.
   nem importação automática. GUI protege instância única e cache WebView no perfil.
 * **Lucille staging:** feature `staging-interface` inclui a oficial, mas exige
   `LUCILLE_STAGING_ROOT` igual ao LOCALAPPDATA sintético e marcador `synthetic-staging.txt`
-  contendo `ORDIS synthetic staging` mais LF. Sem isso, recusa abrir perfil. Não existe
+  contendo `ORDIS synthetic staging` (LF ou CRLF). Sem isso, recusa abrir perfil. Não existe
   bootstrap que crie perfil, copie conversas ou altere a instalação operacional.
 
 O perfil de staging deve ser preparado explicitamente fora dos binários. O inicializador

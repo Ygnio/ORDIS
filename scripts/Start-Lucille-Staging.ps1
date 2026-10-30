@@ -5,7 +5,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $local = (Resolve-Path -LiteralPath $SyntheticLocalAppData).Path
-if ((Get-Content -LiteralPath (Join-Path $local 'synthetic-staging.txt') -Raw) -cne "ORDIS synthetic staging`n") {
+if ((Get-Content -LiteralPath (Join-Path $local 'synthetic-staging.txt') -Raw).TrimEnd([char[]]"`r`n") -cne 'ORDIS synthetic staging') {
     throw 'Staging requires an explicitly prepared synthetic profile.'
 }
 $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
