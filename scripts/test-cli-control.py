@@ -149,7 +149,10 @@ def run(cli, official=False):
                             time.sleep(1.2)
                             try:
                                 send({'type': 'approval', 'id': ident, 'decision': 'allow'})
-                            except BrokenPipeError:
+                            except OSError:
+                                # Windows/Python may report EINVAL, rather than BrokenPipeError,
+                                # when the native approval timeout already closed the process pipe.
+                                assert p.poll() is not None, 'Expired approval pipe failed while CLI remained active'
                                 pass
                         elif case == 'invalid-id':
                             send({'type': 'approval', 'id': 'wrong-operation', 'decision': 'allow'})
@@ -180,13 +183,17 @@ def run(cli, official=False):
                         assert 'Synthetic partial.' in assistant['texto'] and assistant['metricas']['total_ms'] > 0
                         assert not any(m['papel'] == 'tool' for m in session['mensagens'])
                     results.append({'case': case, 'passed': True, 'elapsed_seconds': round(time.monotonic() - started, 3)})
+                    print(json.dumps(results[-1]), flush=True)
                 finally:
                     if p.poll() is None:
                         p.kill()  # only this owned synthetic CLI; never servers or external processes
                         p.wait()
                     for stream in (p.stdin, p.stdout, p.stderr):
                         if not stream.closed:
-                            stream.close()
+                            try:
+                                stream.close()
+                            except OSError:
+                                pass  # an exited Windows child may already have invalidated the pipe
     finally:
         server.shutdown()
         server.server_close()
