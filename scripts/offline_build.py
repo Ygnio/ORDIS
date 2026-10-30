@@ -61,7 +61,9 @@ def prepare(config, root, reuse=False):
                CARGO_BUILD_JOBS=str(config.get('jobs', 2)))
     env['CARGO_TARGET_' + target.upper().replace('-', '_') + '_LINKER'] = str(tools['linker'])
     # Child only: never write user/system PATH. Keep OS runtime tools available.
-    env['PATH'] = os.pathsep.join(dict.fromkeys(str(p.parent) for p in tools.values())) + os.pathsep + os.environ.get('PATH', '')
+    # GCC's cc1 loads its runtime from PATH. Rust's bundled libgcc can be incompatible.
+    ordered = [tools[n] for n in ('cc', 'ar', 'linker', 'cargo', 'rustc', 'rustdoc')]
+    env['PATH'] = os.pathsep.join(dict.fromkeys(str(p.parent) for p in ordered)) + os.pathsep + os.environ.get('PATH', '')
     (root / 'environment.json').write_text(json.dumps(evidence, indent=2), encoding='utf-8')
     return tools, env
 

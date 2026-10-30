@@ -52,7 +52,10 @@ Pré-condições: todos os executáveis nativos e a biblioteca padrão do target
 Proxies com o hash de `rustup.exe` são recusados antes de execução. O cache é copiado,
 não compartilhado por links, e os artefatos permanecem no staging. `--reuse` exige os mesmos hashes
 de ferramentas e target. PATH, RUSTC, RUSTDOC, CC, AR e variáveis Cargo são definidos somente no
-processo filho; não há alteração de PATH global. O executor fixa `--offline --locked`,
+processo filho; não há alteração de PATH global. A pasta do compilador C precede a do Rust:
+foi reproduzida uma incompatibilidade de DLL do GCC quando a ordem era inversa
+(mesmo arquivo C: saída 1 sem diagnóstico com Rust primeiro, saída 0 com MinGW primeiro).
+O executor fixa `--offline --locked`,
 RUSTUP_AUTO_INSTALL=0 e um RUSTUP_HOME vazio isolado. Registra commit, Cargo.lock, target,
 argumentos e hashes em `environment.json`, além de `build.log`.
 
