@@ -948,7 +948,7 @@ pub fn finish(c: &Caminhos, id: &str, raw: Value) -> Result<Value, String> {
     let stdout = raw["stdout"].as_str().unwrap_or("");
     let stderr = raw["stderr"].as_str().unwrap_or("");
     let diagnostics = diagnostics(stdout, stderr);
-    let result = json!({"state":state,"job_id":id,"exit_code":raw["exit_code"],"duration_ms":raw["duration_ms"],"trusted_executor":{"state":state,"exit_code":raw["exit_code"],"reason":raw_state,"owned_pids":raw["owned_pids"],"peak_job_memory_bytes":raw["peak_job_memory_bytes"],"audit_ref":record["audit_ref"]},"untrusted_output":{"stdout":stdout,"stderr":stderr,"truncated":raw["truncated"]},"untrusted_diagnostics":diagnostics,"summary":{"success":state=="completed","operation":record["operation"],"reason":raw_state}});
+    let result = json!({"state":state,"job_id":id,"exit_code":raw["exit_code"],"duration_ms":raw["duration_ms"],"trusted_executor":{"state":state,"exit_code":raw["exit_code"],"reason":raw_state,"owned_pids":raw["owned_pids"],"peak_job_memory_bytes":raw["peak_job_memory_bytes"],"resource_error":raw["resource_error"],"measured_storage_bytes":raw["measured_storage_bytes"],"audit_ref":record["audit_ref"]},"untrusted_output":{"stdout":stdout,"stderr":stderr,"truncated":raw["truncated"]},"untrusted_diagnostics":diagnostics,"summary":{"success":state=="completed","operation":record["operation"],"reason":raw_state}});
     record["state"] = json!(state);
     record["exit_code"] = raw["exit_code"].clone();
     record["summary"] = result["summary"].clone();

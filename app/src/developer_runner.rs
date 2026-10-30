@@ -240,6 +240,8 @@ pub fn run(
         });
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         let mut state = "completed";
+        let mut resource_error: Option<String> = None;
+        let mut measured_storage_bytes: Option<u64> = None;
         let mut truncated = false;
         let mut observed = std::collections::HashMap::<u32, Instant>::new();
         let mut owned_pids = Vec::<u32>::new();
@@ -266,11 +268,22 @@ pub fn run(
                                 }
                             }
                         }
-                        Err(_) => state = "resource_error",
+                        Err(e) => {
+                            state = "resource_error";
+                            resource_error = Some(e);
+                        }
                     }
                     match storage_bytes(&l.storage_dir, 0) {
-                        Ok(n) if n <= l.storage_mib * 1024 * 1024 => {}
-                        _ => state = "storage_limit",
+                        Ok(n) => {
+                            measured_storage_bytes = Some(n);
+                            if n > l.storage_mib * 1024 * 1024 {
+                                state = "storage_limit";
+                            }
+                        }
+                        Err(e) => {
+                            state = "resource_error";
+                            resource_error = Some(e);
+                        }
                     }
                 }
                 if heartbeat.elapsed() >= Duration::from_millis(250) {
@@ -357,7 +370,7 @@ pub fn run(
                     state = "failed";
                 }
                 return Ok(
-                    json!({"state":state,"exit_code":exit.code(),"stdout":crate::developer::redact(&String::from_utf8_lossy(&stdout)),"stderr":crate::developer::redact(&String::from_utf8_lossy(&stderr)),"truncated":truncated,"duration_ms":started.elapsed().as_secs_f64()*1000.0,"owned_pids":owned_pids,"peak_job_memory_bytes":if stats_ok{Some(stats.PeakJobMemoryUsed)}else{None}}),
+                    json!({"state":state,"exit_code":exit.code(),"stdout":crate::developer::redact(&String::from_utf8_lossy(&stdout)),"stderr":crate::developer::redact(&String::from_utf8_lossy(&stderr)),"truncated":truncated,"duration_ms":started.elapsed().as_secs_f64()*1000.0,"owned_pids":owned_pids,"peak_job_memory_bytes":if stats_ok{Some(stats.PeakJobMemoryUsed)}else{None},"resource_error":resource_error,"measured_storage_bytes":measured_storage_bytes}),
                 );
             }
             thread::sleep(Duration::from_millis(15));
@@ -387,28 +400,97 @@ fn members(job: &Job) -> Result<Vec<u32>, String> {
     }
     Ok(data[1..1 + count].iter().map(|p| *p as u32).collect())
 }
+#[derive(Clone, Copy, PartialEq)]
+enum ScanPhase {
+    BeforeMetadata,
+    BeforeDirectory,
+}
 fn storage_bytes(dir: &Path, depth: usize) -> Result<u64, String> {
-    use std::os::windows::fs::MetadataExt;
+    storage_scan(dir, depth, &mut |_, _| {})
+}
+fn storage_scan(
+    dir: &Path,
+    depth: usize,
+    hook: &mut impl FnMut(&Path, ScanPhase),
+) -> Result<u64, String> {
+    use std::{io::ErrorKind, os::windows::fs::MetadataExt};
     if depth > 16 {
         return Err("Saída excedeu profundidade permitida.".into());
     }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if depth > 0 && e.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(e) => {
+            return Err(format!(
+                "Não foi possível enumerar a saída: {:?}.",
+                e.kind()
+            ))
+        }
+    };
     let mut total = 0u64;
     let mut count = 0;
-    for e in fs::read_dir(dir).map_err(|_| "Saída indisponível.")? {
+    for entry in entries {
+        let p = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Não foi possível enumerar um item da saída: {:?}.",
+                    e.kind()
+                ))
+            }
+        };
         count += 1;
         if count > 4096 {
             return Err("Arquivos de saída em excesso.".into());
         }
-        let p = e.map_err(|_| "Saída indisponível.")?.path();
-        let m = fs::symlink_metadata(&p).map_err(|_| "Saída indisponível.")?;
+        hook(&p, ScanPhase::BeforeMetadata);
+        let m = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("Metadados da saída indisponíveis: {:?}.", e.kind())),
+        };
         if m.file_attributes() & 0x400 != 0 {
             return Err("Redirecionamento na saída bloqueado.".into());
         }
         total = total.saturating_add(if m.is_dir() {
-            storage_bytes(&p, depth + 1)?
+            hook(&p, ScanPhase::BeforeDirectory);
+            storage_scan(&p, depth + 1, hook)?
         } else {
             m.len()
         });
     }
     Ok(total)
+}
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[test]
+    fn compiler_temporary_outputs_can_disappear_at_both_scan_boundaries() {
+        let root = std::env::temp_dir().join(format!(
+            "ordis-storage-race-{}",
+            crate::controle::sufixo_unico()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("stable"), b"12345").unwrap();
+        fs::write(root.join("temporary"), b"deleted by compiler").unwrap();
+        fs::create_dir(root.join("temporary-directory")).unwrap();
+        let bytes = storage_scan(&root, 0, &mut |p, phase| {
+            if p.file_name().is_some_and(|n| n == "temporary") && phase == ScanPhase::BeforeMetadata
+            {
+                fs::remove_file(p).unwrap();
+            }
+            if p.file_name().is_some_and(|n| n == "temporary-directory")
+                && phase == ScanPhase::BeforeDirectory
+            {
+                fs::remove_dir(p).unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(bytes, 5);
+        assert_eq!(storage_bytes(&root, 0).unwrap(), 5);
+        fs::remove_dir_all(&root).unwrap();
+        // A missing job root remains a failure; only vanished nested temporary entries are benign.
+        assert!(storage_bytes(&root, 0).is_err());
+    }
 }
