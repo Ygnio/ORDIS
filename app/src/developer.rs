@@ -727,6 +727,7 @@ struct Waiting {
     sender: mpsc::SyncSender<bool>,
     deadline: Instant,
 }
+const APPROVAL_EXPIRED: &str = "Aprovação expirou; proponha novamente.";
 static WAITING: Mutex<Option<(String, Waiting)>> = Mutex::new(None);
 static REFUSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 pub fn refused(task: &str) -> bool {
@@ -805,15 +806,21 @@ fn approval(
             },
         ));
     }
+    let expires_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+        + timeout_seconds * 1000;
     event(
-        json!({"state":"awaiting_approval","id":id,"task":task,"proposal":proposal,"timeout_seconds":timeout_seconds}),
+        json!({"state":"awaiting_approval","id":id,"task":task,"proposal":proposal,
+        "timeout_seconds":timeout_seconds,"approval_expires_at_ms":expires_at_ms}),
     );
     let answer = loop {
         if cancel.load(Ordering::Relaxed) {
             break Err("Tarefa cancelada antes da aplicação.".into());
         }
         if Instant::now() >= deadline {
-            break Err("Aprovação expirou; proponha novamente.".into());
+            break Err(APPROVAL_EXPIRED.into());
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(v) => break Ok(v),
@@ -1132,6 +1139,12 @@ fn execute_with(
             .push(task.to_string());
         let state = if cancel.load(Ordering::Relaxed) {
             "cancelled"
+        } else if decision
+            .as_ref()
+            .err()
+            .is_some_and(|e| e == APPROVAL_EXPIRED)
+        {
+            "timeout"
         } else {
             "refused"
         };

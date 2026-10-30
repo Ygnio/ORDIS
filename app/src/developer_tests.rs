@@ -338,6 +338,29 @@ fn native_approval_is_one_shot_and_cannot_be_forged_as_tool() {
     assert!(f.call("developer_decide", json!({"allow":true})).is_err());
 }
 #[test]
+fn expired_approval_is_a_timeout_in_the_journal_and_never_writes() {
+    let f = Fixture::new();
+    let task = format!("expiry-{}", crate::controle::sufixo_unico());
+    let result = execute_with(
+        &f.c,
+        &task,
+        "workspace_write",
+        json!({"path":"expired.txt","content":"synthetic","reason":"Synthetic expiry"}),
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Err(APPROVAL_EXPIRED.into()),
+    );
+    assert!(result.is_err());
+    assert!(!f.root.join("expired.txt").exists());
+    let state: String = db(&f.c)
+        .unwrap()
+        .query_row("SELECT state FROM operations WHERE task=?1", [task], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(state, "timeout");
+}
+#[test]
 fn job_runner_output_failure_timeout_and_cancel() {
     let f = Fixture::new();
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())

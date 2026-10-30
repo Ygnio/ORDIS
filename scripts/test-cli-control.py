@@ -142,6 +142,8 @@ def run(cli, official=False):
                         if '[developer] ' not in line:
                             continue
                         event = json.loads(line.split('[developer] ', 1)[1])
+                        if event['state'] == 'timeout':
+                            assert case in ('timeout', 'expired'), 'Unexpected approval expiry'
                         if event['state'] != 'awaiting_approval':
                             continue
                         ident = event['id']

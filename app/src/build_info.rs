@@ -1,4 +1,4 @@
-pub const VERSION: &str = "2026.10.30-cli-gui-parity.1";
+pub const VERSION: &str = "2026.10.30-cli-gui-parity.2";
 pub fn value() -> serde_json::Value {
     serde_json::json!({
         "version": VERSION,

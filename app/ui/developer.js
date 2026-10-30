@@ -3,7 +3,10 @@
   const states = { awaiting_approval: 'Aguardando aprovação', running: 'Executando', output: 'Saída', completed: 'Concluído', failed: 'Falhou', cancelled: 'Cancelado', refused: 'Recusado', timeout: 'Tempo esgotado', interrupted: 'Interrompido ao reiniciar' };
   function label(state) { return states[state] || state; }
   function decision(value) { return value === 'allow'; }
-  if (typeof module !== 'undefined') { module.exports = { label, decision }; return; }
+  function approvalRemaining(expires, now = Date.now()) {
+    return Number.isFinite(expires) && Number.isFinite(now) ? Math.max(0, Math.ceil((expires - now) / 1000)) : 0;
+  }
+  if (typeof module !== 'undefined') { module.exports = { label, decision, approvalRemaining }; return; }
   const $ = (id) => document.getElementById(id);
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -59,26 +62,40 @@
     let card = cards.get(d.id);
     if (!card) {
       const root = document.createElement('section'); root.className = 'cartao';
-      const title = node('h3', 'Operação local'); const state = node('p', '');
+      const title = node('h3', 'Operação local'); const state = node('p', ''); const deadline = node('p', '');
       const details = document.createElement('details'); details.open = d.state === 'awaiting_approval';
       const preview = node('pre', JSON.stringify(d.proposal || {}, null, 2)); const output = node('pre', '');
       details.append(node('summary', 'Arquivos, diff, comando e saída'), preview, output);
-      const buttons = document.createElement('div'); root.append(title, state, details, buttons);
-      panel.append(root); card = { root, title, state, preview, output, buttons }; cards.set(d.id, card);
+      const buttons = document.createElement('div'); root.append(title, state, deadline, details, buttons);
+      panel.append(root); card = { root, title, state, deadline, preview, output, buttons, timer: null }; cards.set(d.id, card);
     }
     card.state.textContent = label(d.state);
     if (d.proposal) { card.title.textContent = d.proposal.tool; card.preview.textContent = JSON.stringify(d.proposal, null, 2); }
     if (d.text && card.output.textContent.length < 256000) card.output.textContent += d.text;
     if (d.result) card.output.textContent = JSON.stringify(d.result, null, 2);
     if (d.state === 'awaiting_approval') {
+      clearInterval(card.timer);
+      card.buttons.replaceChildren();
       for (const [text, value] of [['Permitir esta operação', 'allow'], ['Recusar', 'deny'], ['Cancelar tarefa', 'cancel']]) {
         const b = node('button', text); b.addEventListener('click', async () => {
           for (const button of card.buttons.children) button.disabled = true;
-          try { if (value === 'cancel') await invoke('interromper'); else await invoke('developer_decide', { id: d.id, allow: decision(value) }); }
+          try {
+            if (value === 'cancel') await invoke('interromper');
+            else if (approvalRemaining(d.approval_expires_at_ms) > 0) await invoke('developer_decide', { id: d.id, allow: decision(value) });
+            else avisar('Aprovação expirada. Solicite uma nova operação.', true);
+          }
           catch (error) { avisar(String(error), true); }
         }); card.buttons.append(b);
       }
+      const tick = () => {
+        const remaining = approvalRemaining(d.approval_expires_at_ms);
+        card.deadline.textContent = remaining > 0 ? `Prazo de aprovação: ${remaining} s restantes.` : 'Prazo de aprovação esgotado.';
+        if (!remaining) { for (const b of card.buttons.children) b.disabled = true; clearInterval(card.timer); }
+      };
+      card.timer = setInterval(tick, 250); tick();
     } else if (d.state !== 'output') {
+      clearInterval(card.timer); card.timer = null;
+      card.deadline.textContent = d.state === 'timeout' ? 'Prazo esgotado; a operação não foi autorizada.' : '';
       card.buttons.replaceChildren();
       const b = node('button', d.state === 'running' ? 'Cancelar tarefa' : 'Fechar cartão');
       b.addEventListener('click', async () => { if (d.state === 'running') await invoke('interromper'); else { card.root.remove(); cards.delete(d.id); panel.hidden = cards.size === 0; } }); card.buttons.append(b);
