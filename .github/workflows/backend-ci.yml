@@ -144,6 +144,10 @@ jobs:
         shell: pwsh
         run: python -B scripts/test-generation-integration.py --cli app/target/release/ordis-cli.exe
 
+      - name: Validate human control protocol and scoped Ctrl+C
+        shell: pwsh
+        run: python -B scripts/test-cli-control.py --cli app/target/release/ordis-cli.exe
+
       - name: Assemble privacy-safe test ZIP
         shell: pwsh
         run: |
@@ -201,6 +205,36 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Package generic GUI and CLI provenance
+        shell: pwsh
+        run: |
+          $loader = Join-Path $env:RUNNER_TEMP 'ORDIS-Windows-Test/app/WebView2Loader.dll'
+          python -B scripts/package-paired.py --bin-dir app/target/release --loader $loader --output "${{ runner.temp }}/ORDIS-Paired"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path "${{ runner.temp }}/ORDIS-Paired/*" -DestinationPath "${{ runner.temp }}/ORDIS-Paired.zip"
+
+      - name: Build guarded Lucille staging pair
+        shell: pwsh
+        run: |
+          & "$env:ORDIS_RUST_BIN/cargo.exe" build --release --locked --features staging-interface --manifest-path app/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B scripts/test-cli-control.py --cli app/target/release/ordis-cli.exe --official-staging
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $loader = Join-Path $env:RUNNER_TEMP 'ORDIS-Windows-Test/app/WebView2Loader.dll'
+          python -B scripts/package-paired.py --bin-dir app/target/release --loader $loader --output "${{ runner.temp }}/Lucille-Paired-Staging" --official-staging
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path "${{ runner.temp }}/Lucille-Paired-Staging/*" -DestinationPath "${{ runner.temp }}/Lucille-Paired-Staging.zip"
+
+      - name: Upload paired distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: CLI-GUI-Paired-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ORDIS-Paired.zip
+            ${{ runner.temp }}/Lucille-Paired-Staging.zip
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload GNU build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -249,6 +283,14 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $log = Join-Path $env:RUNNER_TEMP 'cargo-test-msvc.log'
           & "$env:ORDIS_RUST_BIN/cargo.exe" test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build both MSVC binaries and validate control protocol
+        shell: pwsh
+        run: |
+          & "$env:ORDIS_RUST_BIN/cargo.exe" build --locked --manifest-path app/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B scripts/test-cli-control.py --cli app/target/debug/ordis-cli.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload MSVC build log on failure

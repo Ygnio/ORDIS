@@ -2,6 +2,16 @@
 
 Alterações específicas do fork Lucille. O histórico e os créditos originais do ORDIS permanecem preservados.
 
+## 2026.10.30-cli-gui-parity.1 — staging
+
+- Toolchain fixo e executor offline com cache/build isolados, preflight sem instalação e rastreabilidade.
+- `conversar` preserva stdin após o JSON inicial; aprovação humana por ID, decisão e prazo.
+- Recusa segura em EOF, timeout e ID inválido/repetido/expirado; texto do modelo não concede consentimento.
+- Ctrl+C e cancelamento JSON da CLI preservam conteúdo parcial e métricas pelo mesmo núcleo da GUI.
+- Configuração compartilhada, prazo de aprovação editável e distribuição Lucille com perfil estável nos dois binários.
+- GUI/CLI informam versão, commit e target; pacote pareado exige metadados iguais e manifesto SHA-256.
+- Staging sintético explícito, sem importações pessoais, migrações operacionais ou substituição de guard.2.
+
 ## 2026.10.25-generation-guard.2 — 2026-10-25
 
 ### Proteção de geração
