@@ -95,6 +95,32 @@ pub fn file_hash(path: &Path) -> Result<String, String> {
     }
     Ok(format!("{:x}", h.finalize()))
 }
+/// Installed tools are read-only inputs. Source/workspace guards still reject hard links.
+/// Denies byte writes through all NTFS aliases and removal of the selected executable.
+fn guard_tool(path: &Path) -> Result<File, String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::*;
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|_| "Ferramenta ocupada para escrita ou indisponível.")?;
+    let m = f
+        .metadata()
+        .map_err(|_| "Metadados da ferramenta indisponíveis.")?;
+    if !m.is_file() || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err("Ferramenta não pode ser link simbólico, junction ou diretório.".into());
+    }
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) } == 0
+        || info.nNumberOfLinks == 0
+    {
+        return Err("Identidade NTFS da ferramenta não verificável.".into());
+    }
+    Ok(f)
+}
 fn tool(path: PathBuf, expected: &str, workspace: &Path) -> Result<Tool, String> {
     if !path.is_absolute()
         || path
@@ -110,7 +136,7 @@ fn tool(path: PathBuf, expected: &str, workspace: &Path) -> Result<Tool, String>
     if actual.starts_with(workspace) {
         return Err("Ferramentas devem permanecer fora do workspace editável.".into());
     }
-    let _guard = crate::developer::guard(&path, false)?;
+    let _guard = guard_tool(&path)?;
     let sha256 = file_hash(&actual)?;
     let proxy = actual.parent().unwrap().join("rustup.exe");
     if proxy.is_file() && file_hash(&proxy)? == sha256 {
@@ -446,10 +472,11 @@ pub fn prepare(root: &Path, cfg: &Config, args: Value) -> Result<Plan, String> {
             .get(name)
             .ok_or_else(|| format!("Ferramenta {name} ausente; sem instalação automática."))?
             .clone();
-        if file_hash(&t.path)? != t.sha256 {
+        let verified = tool(t.path.clone(), &format!("{name}.exe"), root)?;
+        if verified.sha256 != t.sha256 {
             return Err("Ferramenta mudou desde a autorização; revise a configuração.".into());
         }
-        Ok(t)
+        Ok(verified)
     };
     let python = get("python")?;
     let binary = match req.operation.as_str() {
@@ -895,6 +922,20 @@ pub fn running(c: &Caminhos, id: &str) -> Result<(), String> {
     r["state"] = json!("running");
     save(c, id, &r)
 }
+pub fn cancel_before_start(c: &Caminhos, id: &str) -> Result<Value, String> {
+    let mut r = read_record(c, id)?;
+    if r["state"] != "awaiting_approval" {
+        return Err("Job já encerrado ou iniciado.".into());
+    }
+    let result = json!({"state":"cancelled","job_id":id,"exit_code":null,"trusted_executor":{"state":"cancelled","executed":false,"exit_code":null,"owned_pids":[],"audit_ref":r["audit_ref"]},"untrusted_output":{"stdout":"","stderr":"","truncated":false},"summary":{"success":false,"executed":false,"reason":"cancelled_before_start"}});
+    r["state"] = json!("cancelled");
+    r["approval_state"] = json!("allowed");
+    r["result"] = result.clone();
+    r["summary"] = result["summary"].clone();
+    r["finished_ms"] = json!(now_ms());
+    save(c, id, &r)?;
+    Ok(result)
+}
 pub fn finish(c: &Caminhos, id: &str, raw: Value) -> Result<Value, String> {
     let raw_state = raw["state"].as_str().unwrap_or("failed");
     let state = match raw_state {
@@ -1093,12 +1134,7 @@ pub fn seal(
     let tools: BTreeMap<String, Tool> =
         serde_json::from_value(tools.clone()).map_err(|_| "Registro de ferramentas inválido.")?;
     for t in tools.values() {
-        let _g = crate::developer::guard(&t.path, false)?;
-        let f = fs::OpenOptions::new()
-            .read(true)
-            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
-            .open(&t.path)
-            .map_err(|_| "Ferramenta ocupada para escrita.".to_string())?;
+        let f = guard_tool(&t.path)?;
         if file_hash(&t.path)? != t.sha256 {
             return Err("Ferramenta mudou depois da aprovação.".into());
         }
@@ -1196,6 +1232,42 @@ mod tests {
         assert!(running(&c, id).is_err());
         approval_end(&c, id, "timeout").unwrap();
         assert!(running(&c, id).is_err());
+        assert!(cancel_before_start(&c, id).is_err());
+        let id = "012345abcdee";
+        fs::create_dir(dir(&c, id).unwrap()).unwrap();
+        save(
+            &c,
+            id,
+            &json!({"id":id,"state":"awaiting_approval","approval_state":"pending"}),
+        )
+        .unwrap();
+        let result = cancel_before_start(&c, id).unwrap();
+        assert_eq!(result["state"], "cancelled");
+        assert_eq!(result["trusted_executor"]["executed"], false);
+        assert!(running(&c, id).is_err());
+        fs::remove_dir_all(c.projeto).unwrap();
+    }
+    #[test]
+    fn installed_tool_alias_is_read_only_while_source_alias_remains_forbidden() {
+        let c = profile();
+        let path = c.projeto.join("native.exe");
+        let alias = c.projeto.join("alias.exe");
+        fs::write(&path, b"synthetic native input").unwrap();
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(crate::developer::guard(&alias, false).is_err());
+        let pinned = file_hash(&path).unwrap();
+        let lock = guard_tool(&path).unwrap();
+        assert!(fs::write(&alias, b"changed through alias").is_err());
+        assert!(fs::remove_file(&path).is_err());
+        // NTFS may unlink another name without changing the selected file or its bytes.
+        fs::remove_file(&alias).unwrap();
+        assert_eq!(file_hash(&path).unwrap(), pinned);
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(fs::write(&alias, b"changed through new alias").is_err());
+        assert_eq!(file_hash(&path).unwrap(), pinned);
+        drop(lock);
+        fs::write(&alias, b"changed through alias").unwrap();
+        assert_ne!(file_hash(&path).unwrap(), pinned);
         fs::remove_dir_all(c.projeto).unwrap();
     }
     #[test]

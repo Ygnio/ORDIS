@@ -1016,7 +1016,7 @@ fn apply(
                     cancel.store(true, Ordering::Relaxed);
                 }
                 if cancel.load(Ordering::Relaxed) {
-                    return Err("Job cancelado antes da execução.".into());
+                    return crate::developer_jobs::cancel_before_start(c, id);
                 }
                 event(json!({"state":"preparing","stage":"persist_running"}));
                 crate::developer_jobs::running(c, id)?;

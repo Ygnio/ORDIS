@@ -103,9 +103,14 @@ Cotas de disco são monitoradas por amostragem; pode haver ultrapassagem entre v
 O prazo de aprovação é separado do prazo de execução da árvore e da verificação dos hashes.
 O histórico conserva até 50 jobs; não há exclusão automática nem recuperação que reexecute jobs.
 
-A validação positiva Cargo fica BLOCKED quando o GNU instalado possui hard links recusados
-pela política, ou quando falta o target MSVC. Não se afrouxa a proteção nem se instala toolchain
-para converter isso em PASS. Clippy exige o componente nativo instalado; ausência é BLOCKED.
+Fontes editáveis continuam recusando hard links. Executáveis instalados fora do workspace
+podem usar aliases NTFS, com nome nativo verificado, hash fixado e handle que impede escrita
+pelos aliases e remoção do caminho selecionado enquanto executa. O teste demonstra que excluir
+um nome alternativo não altera o executável selecionado; isso não autoriza editar fontes por links.
+Falta de target MSVC ou de ferramenta continua BLOCKED, sem instalação implícita. Clippy exige
+o componente nativo já instalado; ausência é BLOCKED. A fila JSONL da CLI é limitada: leitor
+travado não bloqueia o monitor de tempo/recursos; saturação cancela e falha de entrega preserva
+o resultado auditável, sem aguardar stdout indefinidamente.
 O teste CI em processo elevado confirma a recusa, mas identifica execução positiva como
 BLOCKED_ELEVATED. CI verde não representa validação visual nem aprovação operacional.
 

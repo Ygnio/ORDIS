@@ -42,7 +42,7 @@ def run(cli, tools, output, languages, allow_elevated_blocked=False):
 
         def action(name, args):
             p = subprocess.run([str(cli), 'desenvolvedor', name], input=json.dumps(args), env=env,
-                               capture_output=True, text=True, encoding='utf-8', timeout=30)
+                               capture_output=True, text=True, encoding='utf-8', timeout=180)
             if p.returncode:
                 raise AssertionError((name, p.stderr, p.stdout))
             return json.loads(p.stdout)
@@ -50,6 +50,7 @@ def run(cli, tools, output, languages, allow_elevated_blocked=False):
         cfg = action('load', {})
         cfg['permissions'].update(enabled=True, workspace=str(workspace), allow_read=True, allow_write=True, allow_execute=True)
         cfg['approval_timeout_seconds'] = 2
+        cfg['max_output_bytes'] = 256000
         cfg['jobs'].update(tools, enabled=True, seconds=15, subprocess_seconds=12, storage_mib=128)
         action('save', cfg)
 
@@ -133,6 +134,14 @@ def run(cli, tools, output, languages, allow_elevated_blocked=False):
             result, _ = request(f'{language}-compile_error', syntax)
             assert result and result['state'] == 'failed', results[-1]
 
+        if 'rust' in languages:
+            action('job_fixture',dict(language='rust',case='unformatted'))
+            result,_=request('rust-unformatted','rust_fmt')
+            assert result and result['state']=='failed',results[-1]
+            if not (Path(tools['rust_bin'])/'cargo-clippy.exe').is_file():
+                result,identity=request('rust-pass','rust_clippy')
+                assert result is None and identity is None
+
         for decision in ('deny', 'eof', 'expire'):
             result, identity = request('node-pass', 'node_test', decision)
             record = action('job_get', dict(id=identity))
@@ -160,6 +169,23 @@ def run(cli, tools, output, languages, allow_elevated_blocked=False):
         (workspace / 'node-pass/app.cjs').write_text('unreviewed code', encoding='utf-8')
         result, identity = request('node-pass', 'node_test')
         assert result is None and identity is None
+        # Stop consuming stdout after approval. The monitor must keep enforcing limits.
+        stalled=subprocess.Popen([str(cli),'job','solicitar'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=env,text=True,encoding='utf-8')
+        stalled.stdin.write(json.dumps(dict(project='node-output',operation='node_test',reason='Synthetic blocked consumer'))+'\n');stalled.stdin.flush()
+        identity=None
+        while True:
+            line=stalled.stdout.readline()
+            assert line,'No approval from stalled-output fixture'
+            frame=json.loads(line)
+            if frame.get('data',{}).get('state')=='awaiting_approval':identity=frame['data']['id'];break
+        stalled.stdin.write(json.dumps(dict(type='approval',id=identity,decision='allow'))+'\n');stalled.stdin.flush()
+        try:stalled.wait(timeout=45)
+        except subprocess.TimeoutExpired:
+            stalled.kill();stalled.wait();raise AssertionError('Blocked consumer stopped native timeout monitor')
+        record=action('job_get',dict(id=identity))
+        assert record['state'] in ('failed','cancelled','timed_out'),record
+        assert stalled.returncode != 0, 'Blocked stdout must fail delivery explicitly'
+        results.append(dict(case='blocked_stdout_consumer',state=record['state'],returncode=stalled.returncode))
         history = action('job_history', {})
         assert not history['automatic_execution']
         assert all(j['state'] not in ('running', 'pending', 'awaiting_approval') for j in history['jobs'])

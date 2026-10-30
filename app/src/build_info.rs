@@ -1,4 +1,4 @@
-pub const VERSION: &str = "2026.10.30-developer-jobs.1";
+pub const VERSION: &str = "2026.10.30-developer-jobs.2";
 pub fn value() -> serde_json::Value {
     serde_json::json!({
         "version": VERSION,

@@ -105,6 +105,72 @@ impl agente::Saida for Terminal {
 fn job_request(c: &controle::Caminhos) -> Result<(), String> {
     let (input, args) = cli_input::Input::start(true)?;
     let args = args.ok_or("JSON inicial ausente.")?;
+    let (output, receive) = std::sync::mpsc::sync_channel::<Value>(64);
+    let (flushed, done) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            use std::os::windows::io::{AsRawHandle, FromRawHandle};
+            use windows_sys::Win32::{
+                Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS},
+                System::{
+                    Console::{GetConsoleMode, GetStdHandle, WriteConsoleW, STD_OUTPUT_HANDLE},
+                    Threading::GetCurrentProcess,
+                },
+            };
+            let mut copied = std::ptr::null_mut();
+            let ok = unsafe {
+                let process = GetCurrentProcess();
+                DuplicateHandle(
+                    process,
+                    GetStdHandle(STD_OUTPUT_HANDLE),
+                    process,
+                    &mut copied,
+                    0,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            };
+            if ok == 0 {
+                return Err("Canal JSONL indisponível.".into());
+            }
+            // A raw duplicate avoids holding Rust's global stdout lock if a reader stalls.
+            let mut stream = unsafe { std::fs::File::from_raw_handle(copied as _) };
+            for frame in receive {
+                let line = format!("{frame}\n");
+                let mut mode = 0;
+                if unsafe { GetConsoleMode(stream.as_raw_handle() as _, &mut mode) } != 0 {
+                    let wide: Vec<u16> = line.encode_utf16().collect();
+                    let mut offset = 0;
+                    while offset < wide.len() {
+                        let mut written = 0;
+                        if unsafe {
+                            WriteConsoleW(
+                                stream.as_raw_handle() as _,
+                                wide[offset..].as_ptr() as _,
+                                (wide.len() - offset) as u32,
+                                &mut written,
+                                std::ptr::null(),
+                            )
+                        } == 0
+                            || written == 0
+                        {
+                            return Err("Canal JSONL indisponível.".into());
+                        }
+                        offset += written as usize;
+                    }
+                } else {
+                    stream
+                        .write_all(line.as_bytes())
+                        .map_err(|_| "Canal JSONL indisponível.")?;
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            cli_input::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let _ = flushed.send(result);
+    });
     let task = format!("job-{}", controle::sufixo_unico());
     developer::begin(c, &task, "Job sintético aprovado individualmente");
     let result = developer::execute(
@@ -115,8 +181,12 @@ fn job_request(c: &controle::Caminhos) -> Result<(), String> {
         &cli_input::CANCEL,
         &|dados| {
             let opened = std::time::Instant::now();
-            println!("{}", serde_json::json!({"type":"developer","data":dados}));
-            let _ = std::io::stdout().flush();
+            if output
+                .try_send(serde_json::json!({"type":"developer","data":dados}))
+                .is_err()
+            {
+                cli_input::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             if dados["state"] == "awaiting_approval" {
                 if let Some(id) = dados["id"].as_str() {
                     let cancel_path = developer_jobs::cancel_path(c, id).ok();
@@ -143,16 +213,24 @@ fn job_request(c: &controle::Caminhos) -> Result<(), String> {
             .and_then(|v| v["state"].as_str())
             .unwrap_or("failed"),
     );
-    match result {
-        Ok(value) => {
-            println!("{}", serde_json::json!({"type":"job_result","data":value}));
-            Ok(())
-        }
-        Err(error) => {
-            println!("{}", serde_json::json!({"type":"job_error","error":error}));
-            Err(error)
-        }
+    let (frame, outcome) = match result {
+        Ok(value) => (
+            serde_json::json!({"type":"job_result","data":value}),
+            Ok(()),
+        ),
+        Err(error) => (
+            serde_json::json!({"type":"job_error","error":error}),
+            Err(error),
+        ),
+    };
+    let sent = output.try_send(frame).is_ok();
+    drop(output);
+    done.recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|_| "Saída JSONL bloqueada; consulte o histórico do job.")??;
+    if !sent {
+        return Err("Saída JSONL saturada; job registrado no histórico privado.".into());
     }
+    outcome
 }
 
 fn executar(c: &controle::Caminhos, acao: &str) -> Result<(), String> {
