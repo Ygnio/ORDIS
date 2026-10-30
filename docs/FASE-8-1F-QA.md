@@ -34,3 +34,6 @@ apagamento dos arquivos. Testar apenas cópias sintéticas: preservar bytes/hash
 ler com a versão antiga, recuperar uma cópia compatível retirando apenas o campo conhecido,
 e confirmar permissões/identidade. Na atualização real futura: backup datado e verificado;
 não sobrescrever bancos novos com backups antigos. Não há migração pessoal nesta fase.
+
+
+Atualização humana de 30/10: identidade após reinício/edição e CRUD de memória PASS, com exclusão e integrity_check do banco sintético confirmados. Expiração sem aprovação PASS: diário timeout e ausência de arquivo. Anexos PNG/JPEG/WebP com prévia/envio PASS; incompatível e tamanho excessivo recusados. Troca TabbyAPI, HTTP 503 e recuperação PASS. Os subcasos remanescentes de anexos e HTTP continuam PENDENTES/BLOCKED na matriz local; o PR permanece em rascunho.

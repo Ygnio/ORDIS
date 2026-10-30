@@ -41,7 +41,7 @@ def package(binary, loader, output, official=False):
     # Explicit public support allowlist. Never glob a data/profile directory.
     support = ['agente/workspace/AGENTS.md', 'app/ui/ordis.png',
                'scripts/serve_inference.py', 'scripts/service_shutdown.py', 'scripts/agent_web_search.py',
-               'scripts/ordis_token_monitor.py', 'scripts/token_counter_paths.py', 'docs/CLI-GUI-CONTRACT.md']
+               'scripts/ordis_token_monitor.py', 'scripts/token_counter_paths.py', 'docs/CLI-GUI-CONTRACT.md', 'docs/DEVELOPER-JOBS.md']
     if not official:
         support += ['config/paths.json', 'config/tabbyapi-inicial.yml', 'config/ordis_qwen_thinking.yml',
                     'config/runtime-packages.txt', 'config/images-requirements.lock.txt']
