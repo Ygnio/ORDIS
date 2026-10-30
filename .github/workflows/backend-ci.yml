@@ -5,12 +5,14 @@ on:
     branches:
       - "feature/**"
       - "fix/**"
+      - "build/**"
       - develop
   pull_request:
     branches:
       - main
       - develop
       - "feature/**"
+      - "build/**"
 
 concurrency:
   group: backend-ci-${{ github.event.pull_request.number || github.ref }}
@@ -47,7 +49,17 @@ jobs:
 
       - name: Install Rust GNU toolchain
         shell: pwsh
-        run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component rustfmt
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bin = Join-Path $env:USERPROFILE '.rustup/toolchains/1.99.1-x86_64-pc-windows-gnu/bin'
+          "ORDIS_RUST_BIN=$bin" >> $env:GITHUB_ENV
+          "RUSTC=$bin/rustc.exe" >> $env:GITHUB_ENV
+          "RUSTDOC=$bin/rustdoc.exe" >> $env:GITHUB_ENV
+          'RUSTUP_AUTO_INSTALL=0' >> $env:GITHUB_ENV
+          & "$bin/rustc.exe" --version --verbose
+          Get-FileHash "$bin/rustc.exe", "$bin/cargo.exe", app/Cargo.lock -Algorithm SHA256
+          git rev-parse HEAD
 
       - name: Install Node.js and Python
         uses: actions/setup-node@v4
@@ -90,7 +102,7 @@ jobs:
           $changed = @(git -c core.quotepath=false diff --name-only --diff-filter=ACMR "$base...HEAD" -- '*.rs')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($file in $changed) {
-            rustfmt +stable-x86_64-pc-windows-gnu --edition 2021 --config skip_children=true --check $file
+            & "$env:ORDIS_RUST_BIN/rustfmt.exe" --edition 2021 --config skip_children=true --check $file
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
@@ -117,7 +129,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $log = Join-Path $env:RUNNER_TEMP 'cargo-test-gnu.log'
-          cargo +stable-x86_64-pc-windows-gnu test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          & "$env:ORDIS_RUST_BIN/cargo.exe" test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Windows test binaries
@@ -125,7 +137,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $log = Join-Path $env:RUNNER_TEMP 'cargo-build-gnu-release.log'
-          cargo +stable-x86_64-pc-windows-gnu build --release --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          & "$env:ORDIS_RUST_BIN/cargo.exe" build --release --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Validate generation completion and tool rejection against mocks
@@ -184,7 +196,7 @@ jobs:
       - name: Upload Windows test ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: Lucille-Windows-Test-Fase-3-4
+          name: ORDIS-Windows-Test-${{ github.sha }}
           path: ${{ runner.temp }}/ORDIS-Windows-Test.zip
           if-no-files-found: error
           retention-days: 14
@@ -219,14 +231,24 @@ jobs:
 
       - name: Install Rust MSVC toolchain
         shell: pwsh
-        run: rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal --component rustfmt
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-msvc --profile minimal --component rustfmt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bin = Join-Path $env:USERPROFILE '.rustup/toolchains/1.99.1-x86_64-pc-windows-msvc/bin'
+          "ORDIS_RUST_BIN=$bin" >> $env:GITHUB_ENV
+          "RUSTC=$bin/rustc.exe" >> $env:GITHUB_ENV
+          "RUSTDOC=$bin/rustdoc.exe" >> $env:GITHUB_ENV
+          'RUSTUP_AUTO_INSTALL=0' >> $env:GITHUB_ENV
+          & "$bin/rustc.exe" --version --verbose
+          Get-FileHash "$bin/rustc.exe", "$bin/cargo.exe", app/Cargo.lock -Algorithm SHA256
+          git rev-parse HEAD
 
       - name: Run Rust tests without changing the repository target
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           $log = Join-Path $env:RUNNER_TEMP 'cargo-test-msvc.log'
-          cargo +stable-x86_64-pc-windows-msvc test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
+          & "$env:ORDIS_RUST_BIN/cargo.exe" test --verbose --locked --manifest-path app/Cargo.toml 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload MSVC build log on failure
