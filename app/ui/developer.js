@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const states = { awaiting_approval: 'Aguardando aprovação', running: 'Executando', output: 'Saída', completed: 'Concluído', failed: 'Falhou', cancelled: 'Cancelado', refused: 'Recusado', timeout: 'Tempo esgotado', interrupted: 'Interrompido ao reiniciar' };
+  const states = { awaiting_approval: 'Aguardando aprovação', running: 'Executando', output: 'Saída', completed: 'Concluído', failed: 'Falhou', cancelled: 'Cancelado', refused: 'Recusado', timeout: 'Tempo esgotado', interrupted: 'Interrompido ao reiniciar', progress: 'Executando', preparing: 'Verificando fontes e ferramentas', timed_out: 'Tempo esgotado' };
   function label(state) { return states[state] || state; }
   function decision(value) { return value === 'allow'; }
   function approvalRemaining(expires, now = Date.now()) {
@@ -32,7 +32,8 @@
     for (const task of h.tasks) {
       const row = node('div', `${task.title} · ${label(task.state)} `);
       const b = node('button', 'Abrir conversa');
-      b.addEventListener('click', () => window.ordisOpenDeveloperTask(task.id)); row.append(b); target.append(row);
+      if (!task.id.startsWith('job-')) { b.addEventListener('click', () => window.ordisOpenDeveloperTask(task.id)); row.append(b); }
+      target.append(row);
     }
     for (const op of h.operations) {
       const d = document.createElement('details');
@@ -70,7 +71,9 @@
       panel.append(root); card = { root, title, state, deadline, preview, output, buttons, timer: null }; cards.set(d.id, card);
     }
     card.state.textContent = label(d.state);
+    if (d.proposal?.tool === 'developer_job') card.job = true;
     if (d.proposal) { card.title.textContent = d.proposal.tool; card.preview.textContent = JSON.stringify(d.proposal, null, 2); }
+    if (d.elapsed_ms != null) card.state.textContent = `${label(d.state)} · ${(d.elapsed_ms / 1000).toFixed(1)} s`;
     if (d.text && card.output.textContent.length < 256000) card.output.textContent += d.text;
     if (d.result) card.output.textContent = JSON.stringify(d.result, null, 2);
     if (d.state === 'awaiting_approval') {
@@ -80,7 +83,7 @@
         const b = node('button', text); b.addEventListener('click', async () => {
           for (const button of card.buttons.children) button.disabled = true;
           try {
-            if (value === 'cancel') await invoke('interromper');
+            if (value === 'cancel') await (card.job ? action('job_cancel', { id: d.id }) : invoke('interromper'));
             else if (approvalRemaining(d.approval_expires_at_ms) > 0) await invoke('developer_decide', { id: d.id, allow: decision(value) });
             else avisar('Aprovação expirada. Solicite uma nova operação.', true);
           }
@@ -93,12 +96,12 @@
         if (!remaining) { for (const b of card.buttons.children) b.disabled = true; clearInterval(card.timer); }
       };
       card.timer = setInterval(tick, 250); tick();
-    } else if (d.state !== 'output') {
+    } else if (!['output', 'progress', 'preparing'].includes(d.state)) {
       clearInterval(card.timer); card.timer = null;
       card.deadline.textContent = d.state === 'timeout' ? 'Prazo esgotado; a operação não foi autorizada.' : '';
       card.buttons.replaceChildren();
       const b = node('button', d.state === 'running' ? 'Cancelar tarefa' : 'Fechar cartão');
-      b.addEventListener('click', async () => { if (d.state === 'running') await invoke('interromper'); else { card.root.remove(); cards.delete(d.id); panel.hidden = cards.size === 0; } }); card.buttons.append(b);
+      b.addEventListener('click', async () => { if (d.state === 'running') await (card.job ? action('job_cancel', { id: d.id }) : invoke('interromper')); else { card.root.remove(); cards.delete(d.id); panel.hidden = cards.size === 0; } }); card.buttons.append(b);
     }
   });
 })();
